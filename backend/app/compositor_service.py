@@ -19,6 +19,13 @@ class EpisodeCompositor:
     def __init__(self) -> None:
         self._storage = storage.Client(project=settings.project) if settings.project else storage.Client()
 
+    def preflight(self) -> dict:
+        try:
+            executable = Path(imageio_ffmpeg.get_ffmpeg_exe())
+            return {"available": executable.exists(), "executable": executable.name}
+        except Exception as exc:
+            return {"available": False, "error": str(exc)}
+
     @staticmethod
     def _split_gs(uri: str) -> tuple[str, str]:
         if not uri.startswith("gs://"):
@@ -219,8 +226,6 @@ class EpisodeCompositor:
             for index, segment in enumerate(segments, start=1):
                 normalized.append(self._normalize_segment(segment, work, index))
 
-            # All normalized files live next to concat.txt. Relative names avoid
-            # Windows drive-letter parsing issues and also work unchanged on Linux.
             concat_file = work / "concat.txt"
             concat_file.write_text(
                 "\n".join(f"file '{path.name}'" for path in normalized),
