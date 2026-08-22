@@ -23,6 +23,9 @@ export interface EpisodeRenderResult {
   summary: string;
   totalDurationSeconds: number;
   segments: EpisodeRenderSegment[];
+  finalPlaybackUrl: string;
+  finalVideoUri: string;
+  composition?: string;
   model: string;
   ttsModel?: string;
 }
