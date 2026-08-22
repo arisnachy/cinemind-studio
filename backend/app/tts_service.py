@@ -11,6 +11,9 @@ from .gemini_service import studio
 
 log = logging.getLogger(__name__)
 
+# Stable voice pool: the same character name always maps to the same voice.
+VOICE_POOL = ["Charon", "Puck", "Aoede", "Leda", "Orus", "Kore"]
+
 class NarrationService:
     def _wav_bytes(self, pcm: bytes, rate: int = 24000) -> bytes:
         out = io.BytesIO()
@@ -21,24 +24,35 @@ class NarrationService:
             wf.writeframes(pcm)
         return out.getvalue()
 
-    def synthesize_to_gcs(self, text: str, locale: str, style: str = "cinematic, emotionally natural narrator") -> dict | None:
-        if not settings.enable_tts or not text.strip():
+    def voice_for_character(self, character_name: str) -> str:
+        if not character_name:
+            return settings.tts_voice
+        index = sum(ord(ch) for ch in character_name) % len(VOICE_POOL)
+        return VOICE_POOL[index]
+
+    def synthesize_to_gcs(
+        self,
+        text: str,
+        locale: str,
+        style: str = "cinematic, emotionally natural performance",
+        voice_name: str | None = None,
+    ) -> dict | None:
+        if not settings.enable_tts or not text.strip() or not settings.video_gcs_uri:
             return None
-        if not settings.video_gcs_uri:
-            return None
+        voice = voice_name or settings.tts_voice
         try:
             response = studio.client().models.generate_content(
                 model=settings.tts_model,
-                contents=f"Speak the following text exactly in locale {locale}. Do not translate it. Text: {text}",
+                contents=f"Perform this exact line naturally in locale {locale}. Do not translate, announce a speaker name, or add words: {text}",
                 config=types.GenerateContentConfig(
                     response_modalities=["AUDIO"],
                     speech_config=types.SpeechConfig(
                         language_code=locale,
                         voice_config=types.VoiceConfig(
-                            prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=settings.tts_voice)
+                            prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice)
                         ),
                     ),
-                    system_instruction=f"You are the voice performer for an original cinematic series. Performance style: {style}. Keep pacing natural and intelligible.",
+                    system_instruction=f"You are a professional voice actor in an original premium scripted series. Performance style: {style}. Speak only the supplied line with natural dramatic pacing.",
                 ),
             )
             pcm = b""
@@ -66,12 +80,11 @@ class NarrationService:
                 "audioUri": uri,
                 "playbackUrl": f"/api/media/video/content?uri={quote(uri, safe='')}",
                 "model": settings.tts_model,
-                "voice": settings.tts_voice,
+                "voice": voice,
                 "locale": locale,
             }
         except Exception as exc:
-            # Rendering should remain usable even if TTS is unavailable for a locale.
-            log.warning("Gemini TTS narration failed for %s: %s", locale, exc)
+            log.warning("Gemini TTS failed for %s: %s", locale, exc)
             return None
 
 narration = NarrationService()
