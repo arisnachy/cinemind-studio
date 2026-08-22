@@ -11,6 +11,13 @@ def truthy(name: str, default: bool = False) -> bool:
         return default
     return value.lower() in {"1", "true", "yes", "on"}
 
+
+def veo_duration() -> int:
+    value = int(os.getenv("VEO_DURATION_SECONDS", "8"))
+    if value not in {4, 6, 8}:
+        raise ValueError("VEO_DURATION_SECONDS must be one of 4, 6, or 8")
+    return value
+
 @dataclass(frozen=True)
 class Settings:
     project: str = os.getenv("GOOGLE_CLOUD_PROJECT", "")
@@ -18,6 +25,7 @@ class Settings:
     text_model: str = os.getenv("GEMINI_TEXT_MODEL", "gemini-3.6-flash")
     image_model: str = os.getenv("GEMINI_IMAGE_MODEL", "gemini-2.5-flash-image")
     veo_model: str = os.getenv("VEO_MODEL", "veo-3.1-fast-generate-001")
+    veo_duration_seconds: int = veo_duration()
     enable_images: bool = truthy("CINEMIND_ENABLE_IMAGE_GENERATION", True)
     enable_video: bool = truthy("CINEMIND_ENABLE_VIDEO_GENERATION", False)
     video_gcs_uri: str = os.getenv("CINEMIND_VIDEO_GCS_URI", "")
