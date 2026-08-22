@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.venv/
+__pycache__/
+*.py[cod]
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+.vscode/
+.idea/
+coverage/
+.google-agents-cli/
+*.jsonl
+service-account*.json
+credentials*.json
