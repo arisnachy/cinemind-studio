@@ -18,7 +18,7 @@ class VideoService:
             source=types.GenerateVideosSource(prompt=prompt),
             config=types.GenerateVideosConfig(
                 number_of_videos=1,
-                duration_seconds=5,
+                duration_seconds=settings.veo_duration_seconds,
                 enhance_prompt=True,
                 aspect_ratio="16:9",
                 output_gcs_uri=settings.video_gcs_uri,
@@ -41,6 +41,7 @@ class VideoService:
             "videoUri": uri,
             "playbackUrl": f"/api/media/video/content?uri={quote(uri, safe='')}",
             "model": settings.veo_model,
+            "durationSeconds": settings.veo_duration_seconds,
         }
 
 videos = VideoService()
