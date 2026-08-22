@@ -23,7 +23,10 @@ export const CinemaPlayerModal: React.FC<CinemaPlayerModalProps> = ({ title, epi
   const [segments, setSegments] = useState<EpisodeRenderSegment[]>([]);
   const [segmentIndex, setSegmentIndex] = useState(0);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const narrationRef = useRef<HTMLAudioElement>(null);
   const locale = getPreferredLocale();
+  const activeSegment = segments[segmentIndex];
+  const narrationUrl = activeSegment?.narrationUrl || '';
 
   useEffect(() => {
     setVideoUrl(title?.videoPreviewUrl || '');
@@ -42,33 +45,61 @@ export const CinemaPlayerModal: React.FC<CinemaPlayerModalProps> = ({ title, epi
       const video = videoRef.current;
       if (!video) return;
       video.muted = true;
+      video.volume = narrationUrl ? 0.28 : 1;
       setIsMuted(true);
       setVideoError('');
       video.load();
+      if (narrationRef.current) {
+        narrationRef.current.pause();
+        narrationRef.current.currentTime = 0;
+        narrationRef.current.load();
+      }
       void video.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [videoUrl]);
+  }, [videoUrl, narrationUrl]);
 
   if (!title) return null;
   const currentItemTitle = episode ? `${title.title} — E${episode.episodeNumber}: ${episode.title}` : title.title;
   const currentSynopsis = episode ? episode.synopsis : title.synopsis;
-  const activeSegment = segments[segmentIndex];
+
+  const syncNarrationToVideo = () => {
+    const video = videoRef.current;
+    const audio = narrationRef.current;
+    if (!video || !audio || !narrationUrl || isMuted) return;
+    if (Math.abs(audio.currentTime - video.currentTime) > 0.35) audio.currentTime = Math.min(video.currentTime, audio.duration || video.currentTime);
+    if (!video.paused && audio.paused) void audio.play().catch(() => undefined);
+  };
 
   const togglePlay = () => {
     const video = videoRef.current;
+    const audio = narrationRef.current;
     if (!video) return;
     if (video.paused) {
-      void video.play().catch((err) => setVideoError(`Playback was blocked: ${err instanceof Error ? err.message : String(err)}`));
+      void video.play().then(() => {
+        if (!isMuted && audio && narrationUrl) {
+          audio.currentTime = Math.min(video.currentTime, audio.duration || video.currentTime);
+          void audio.play().catch(() => undefined);
+        }
+      }).catch((err) => setVideoError(`Playback was blocked: ${err instanceof Error ? err.message : String(err)}`));
     } else {
       video.pause();
+      audio?.pause();
     }
   };
 
   const toggleMute = () => {
     const next = !isMuted;
     setIsMuted(next);
-    if (videoRef.current) videoRef.current.muted = next;
+    const video = videoRef.current;
+    const audio = narrationRef.current;
+    if (video) video.muted = next;
+    if (next) {
+      audio?.pause();
+    } else if (audio && narrationUrl && video && !video.paused) {
+      audio.currentTime = Math.min(video.currentTime, audio.duration || video.currentTime);
+      void audio.play().catch(() => undefined);
+    }
   };
 
   const generateVeoClip = async () => {
@@ -85,7 +116,7 @@ export const CinemaPlayerModal: React.FC<CinemaPlayerModalProps> = ({ title, epi
   };
 
   const renderEpisodeCut = async () => {
-    setVideoJob({loading:true, message:`Gemini is directing a 32-second ${locale} episode cut, then Veo will render four consecutive shots. This uses 4 Veo generations and can take several minutes…`});
+    setVideoJob({loading:true, message:`Gemini is directing a 32-second ${locale} episode cut. Veo will render four consecutive shots and Gemini-TTS will create language-specific voice tracks. This uses 4 Veo generations and can take several minutes…`});
     setVideoError('');
     setSegments([]);
     setSegmentIndex(0);
@@ -101,13 +132,15 @@ export const CinemaPlayerModal: React.FC<CinemaPlayerModalProps> = ({ title, epi
       setSegments(result.segments);
       setSegmentIndex(0);
       setVideoUrl(result.segments[0].playbackUrl);
-      setVideoJob({loading:false, message:`${result.episodeTitle} · ${result.totalDurationSeconds}s · ${result.segments.length} shots · ${result.locale}. ${result.summary}`});
+      setVideoJob({loading:false, message:`${result.episodeTitle} · ${result.totalDurationSeconds}s · ${result.segments.length} shots · ${result.locale}. Voice: ${result.ttsModel || 'Veo native audio'}. ${result.summary}`});
     } catch (err) {
       setVideoJob({loading:false, message: err instanceof Error ? err.message : 'Episode rendering failed.'});
     }
   };
 
   const handleEnded = () => {
+    narrationRef.current?.pause();
+    if (narrationRef.current) narrationRef.current.currentTime = 0;
     if (segments.length > 1 && segmentIndex < segments.length - 1) {
       const nextIndex = segmentIndex + 1;
       setSegmentIndex(nextIndex);
@@ -122,6 +155,7 @@ export const CinemaPlayerModal: React.FC<CinemaPlayerModalProps> = ({ title, epi
 
   return (
     <div className="fixed inset-0 z-50 bg-black flex flex-col justify-between select-none animate-fade-in">
+      <audio ref={narrationRef} src={narrationUrl || undefined} preload="auto" />
       <div className="absolute top-0 left-0 right-0 z-30 p-6 flex items-center justify-between bg-gradient-to-b from-black/90 via-black/40 to-transparent">
         <div className="flex items-center space-x-3">
           <button onClick={onClose} className="p-2 rounded-full bg-white/10 hover:bg-white/20 text-white backdrop-blur-md transition-all hover:scale-105" aria-label="Back to catalog"><X className="w-6 h-6" /></button>
@@ -148,10 +182,12 @@ export const CinemaPlayerModal: React.FC<CinemaPlayerModalProps> = ({ title, epi
                 preload="auto"
                 className="max-w-full max-h-full object-contain"
                 onClick={togglePlay}
-                onPlay={() => { setIsPlaying(true); setVideoError(''); }}
-                onPause={() => setIsPlaying(false)}
+                onPlay={() => { setIsPlaying(true); setVideoError(''); syncNarrationToVideo(); }}
+                onPause={() => { setIsPlaying(false); narrationRef.current?.pause(); }}
                 onLoadedData={() => setVideoError('')}
                 onEnded={handleEnded}
+                onSeeking={syncNarrationToVideo}
+                onTimeUpdate={(e) => { const el=e.currentTarget; if(el.duration) setProgress((el.currentTime/el.duration)*100); syncNarrationToVideo(); }}
                 onError={(e) => {
                   const media = e.currentTarget;
                   const code = media.error?.code;
@@ -159,7 +195,6 @@ export const CinemaPlayerModal: React.FC<CinemaPlayerModalProps> = ({ title, epi
                   setVideoError(`Video playback error${code ? ` ${code}` : ''}: ${message}`);
                   setIsPlaying(false);
                 }}
-                onTimeUpdate={(e) => { const el=e.currentTarget; if(el.duration) setProgress((el.currentTime/el.duration)*100); }}
               />
             ) : (
               <div className="absolute inset-0 flex items-center justify-center">
@@ -176,7 +211,7 @@ export const CinemaPlayerModal: React.FC<CinemaPlayerModalProps> = ({ title, epi
                     </button>
                     {episode && <button disabled={videoJob.loading} onClick={renderEpisodeCut} className="inline-flex items-center gap-2 rounded-xl bg-purple-600 text-white px-5 py-3 font-bold text-sm hover:bg-purple-500 disabled:opacity-60"><Clapperboard className="w-4 h-4" />{t('renderEpisode', locale)}</button>}
                   </div>
-                  <p className="text-[10px] text-gray-400">Episode Cut currently renders 4 × 8-second Veo shots (32 seconds). It consumes four Veo generations.</p>
+                  <p className="text-[10px] text-gray-400">Episode Cut currently renders 4 × 8-second Veo shots (32 seconds). It consumes four Veo generations. Gemini-TTS adds a separate narration track when available.</p>
                   {videoJob.message && <p className="text-xs text-purple-200 bg-black/50 rounded-lg px-3 py-2 border border-white/10">{videoJob.message}</p>}
                 </div>
               </div>
@@ -184,6 +219,7 @@ export const CinemaPlayerModal: React.FC<CinemaPlayerModalProps> = ({ title, epi
             {videoUrl && showSubtitles && subtitleText && <div className="absolute bottom-28 left-1/2 -translate-x-1/2 bg-black/80 px-4 py-1.5 rounded-md text-sm text-yellow-300 text-center font-medium max-w-xl border border-white/10 backdrop-blur-md">{subtitleText}</div>}
             {videoUrl && segments.length > 1 && <div className="absolute top-24 right-6 z-20 rounded-full bg-black/70 border border-white/10 px-3 py-1 text-xs text-white">Shot {segmentIndex + 1}/{segments.length}</div>}
             {videoUrl && isMuted && <button onClick={toggleMute} className="absolute bottom-36 right-6 z-20 rounded-full bg-purple-600 px-3 py-1.5 text-xs font-bold text-white shadow-lg">Unmute dialogue / narration</button>}
+            {videoUrl && activeSegment?.narrationUrl && !isMuted && <div className="absolute bottom-36 left-6 z-20 rounded-full bg-emerald-500/15 border border-emerald-400/30 px-3 py-1 text-[10px] text-emerald-300">Gemini-TTS · {activeSegment.narrationVoice || 'voice'} · {locale}</div>}
             {videoUrl && videoError && <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-20 max-w-xl rounded-xl border border-amber-400/30 bg-black/90 p-4 text-amber-100 shadow-2xl"><div className="flex items-start gap-3"><AlertTriangle className="w-5 h-5 mt-0.5 text-amber-400 shrink-0"/><div><p className="font-bold">Generated file received, playback failed</p><p className="text-xs mt-1 text-amber-100/80 break-words">{videoError}</p><button onClick={() => { const video=videoRef.current; if(video){ setVideoError(''); video.load(); void video.play(); } }} className="mt-3 px-3 py-1.5 rounded-lg bg-white text-black text-xs font-bold">Reload video</button></div></div></div>}
           </div>
         )}
