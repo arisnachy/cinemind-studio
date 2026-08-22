@@ -46,8 +46,14 @@ class EpisodeCompositor:
         return f"gs://{bucket_name}/{object_name}"
 
     @staticmethod
-    def _run(args: list[str]) -> None:
-        proc = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    def _run(args: list[str], cwd: Path | None = None) -> None:
+        proc = subprocess.run(
+            args,
+            cwd=str(cwd) if cwd else None,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
         if proc.returncode != 0:
             tail = (proc.stderr or "")[-4000:]
             raise RuntimeError(f"FFmpeg failed ({proc.returncode}): {tail}")
@@ -133,8 +139,6 @@ class EpisodeCompositor:
                 self._run(mix_command)
                 return normalized
             except Exception as exc:
-                # Some Veo files can lack an audio stream. In that case, use the
-                # deterministic Gemini-TTS track alone rather than failing production.
                 log.warning("Ambient/TTS mix failed for shot %s, using voice-only mix: %s", index, exc)
                 self._run([
                     ffmpeg,
@@ -171,8 +175,6 @@ class EpisodeCompositor:
                 ])
                 return normalized
 
-        # No scripted speech in this shot. Keep only Veo's deliberately restricted
-        # environmental ambience. Optional audio mapping avoids failure on silent clips.
         self._run([
             ffmpeg,
             "-y",
@@ -217,9 +219,11 @@ class EpisodeCompositor:
             for index, segment in enumerate(segments, start=1):
                 normalized.append(self._normalize_segment(segment, work, index))
 
+            # All normalized files live next to concat.txt. Relative names avoid
+            # Windows drive-letter parsing issues and also work unchanged on Linux.
             concat_file = work / "concat.txt"
             concat_file.write_text(
-                "\n".join(f"file '{path.as_posix().replace(chr(39), chr(39)+chr(92)+chr(39)+chr(39))}'" for path in normalized),
+                "\n".join(f"file '{path.name}'" for path in normalized),
                 encoding="utf-8",
             )
             final_path = work / "episode-master.mp4"
@@ -232,16 +236,14 @@ class EpisodeCompositor:
                     "-safe",
                     "0",
                     "-i",
-                    str(concat_file),
+                    concat_file.name,
                     "-c",
                     "copy",
                     "-movflags",
                     "+faststart",
-                    str(final_path),
-                ])
+                    final_path.name,
+                ], cwd=work)
             except Exception:
-                # Re-encode as a deterministic fallback if concat-copy rejects a
-                # codec/timestamp detail from an individual shot.
                 self._run([
                     ffmpeg,
                     "-y",
@@ -250,7 +252,7 @@ class EpisodeCompositor:
                     "-safe",
                     "0",
                     "-i",
-                    str(concat_file),
+                    concat_file.name,
                     "-c:v",
                     "libx264",
                     "-preset",
@@ -263,8 +265,8 @@ class EpisodeCompositor:
                     "160k",
                     "-movflags",
                     "+faststart",
-                    str(final_path),
-                ])
+                    final_path.name,
+                ], cwd=work)
 
             uri = self._upload(final_path, "episodes/master", "mp4", "video/mp4")
             return {
