@@ -16,7 +16,7 @@ from .schemas import CanonAnalyzeRequest, CanonResolveRequest, EpisodeRenderRequ
 from .video_service import videos
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
-app = FastAPI(title="CINEMIND Studio", version="0.4.0")
+app = FastAPI(title="CINEMIND Studio", version="0.4.1")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
 
 @app.on_event("startup")
@@ -55,14 +55,21 @@ def health():
 @app.post("/api/studio/generate")
 async def generate(req: GenerateTitleRequest):
     if not studio.ready:
-        raise HTTPException(503, "Google Cloud is not configured. Set GOOGLE_CLOUD_PROJECT and deploy with Vertex AI credentials.")
+        raise HTTPException(503, detail={"phase": "preflight", "error": "Google Cloud is not configured"})
+
+    phase = "blueprint"
     try:
         blueprint, _ = await studio.generate_blueprint(req)
+
+        phase = "catalog"
         title = studio.to_title(req, blueprint)
         title["productionStatus"] = "WRITING"
+
+        phase = "memory"
         memory.persist_generation(viewer_id=req.profile.id, title=title, canon_facts=blueprint.canonFacts)
 
         if req.autoProducePilot and settings.enable_video:
+            phase = "pilot_render"
             title["productionStatus"] = "RENDERING"
             first_episode = (title.get("episodes") or [{}])[0]
             try:
@@ -74,14 +81,15 @@ async def generate(req: GenerateTitleRequest):
                     includeNarration=True,
                 ))
                 segments = rendered.get("segments", [])
+                if not segments:
+                    raise RuntimeError("Pilot renderer completed without playable segments")
                 title["productionStatus"] = "READY"
                 title["productionSegments"] = segments
                 title["productionSummary"] = rendered.get("summary", "")
                 title["productionLogline"] = rendered.get("logline", "")
                 title["productionContinuityLock"] = rendered.get("continuityLock", {})
-                title["hasGeneratedVideo"] = bool(segments)
-                if segments:
-                    title["videoPreviewUrl"] = segments[0].get("playbackUrl", "")
+                title["hasGeneratedVideo"] = True
+                title["videoPreviewUrl"] = segments[0].get("playbackUrl", "")
                 if first_episode:
                     first_episode["status"] = "Ready"
                     first_episode["renderedSeconds"] = rendered.get("totalDurationSeconds", 0)
@@ -89,14 +97,23 @@ async def generate(req: GenerateTitleRequest):
             except Exception as production_exc:
                 logging.exception("Automatic pilot production failed")
                 title["productionStatus"] = "FAILED"
-                title["productionError"] = str(production_exc)
+                title["productionError"] = f"pilot_render: {production_exc.__class__.__name__}: {production_exc}"
                 if first_episode:
                     first_episode["status"] = "Scene generation"
 
         return title
+    except HTTPException:
+        raise
     except Exception as exc:
-        logging.exception("Generation failed")
-        raise HTTPException(500, f"Gemini studio generation failed: {exc}") from exc
+        logging.exception("Generation failed during phase %s", phase)
+        raise HTTPException(
+            500,
+            detail={
+                "phase": phase,
+                "errorType": exc.__class__.__name__,
+                "error": str(exc),
+            },
+        ) from exc
 
 @app.post("/api/canon/analyze")
 async def canon_analyze(req: CanonAnalyzeRequest):
