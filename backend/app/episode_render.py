@@ -4,6 +4,7 @@ from google.genai import types
 from .config import settings
 from .gemini_service import studio
 from .schemas import EpisodeRenderPlan, EpisodeRenderRequest
+from .tts_service import narration
 from .video_service import videos
 
 
@@ -74,7 +75,6 @@ RULES:
     )
     plan = response.parsed if isinstance(response.parsed, EpisodeRenderPlan) else EpisodeRenderPlan.model_validate_json(response.text)
     if len(plan.shots) != shot_count:
-        # Keep rendering bounded and deterministic even if the model returns extras.
         plan.shots = plan.shots[:shot_count]
     return plan
 
@@ -83,12 +83,16 @@ def render_episode(req: EpisodeRenderRequest) -> dict:
     plan = build_plan(req)
     rendered = []
     for index, shot in enumerate(plan.shots, start=1):
+        # Veo creates the moving image + environmental/native sound. Gemini-TTS
+        # creates a separate, reliable language-specific voice track.
         result = videos.generate_prompt(
             shot.visualPromptEnglish,
             locale=req.locale,
-            narration=shot.narration if req.includeNarration else "",
+            narration="",
             dialogue=shot.dialogue,
         )
+        voice_text = " ".join(x for x in [shot.narration if req.includeNarration else "", shot.dialogue] if x).strip()
+        voice = narration.synthesize_to_gcs(voice_text, req.locale) if voice_text else None
         rendered.append({
             "shotNumber": index,
             "playbackUrl": result["playbackUrl"],
@@ -97,6 +101,9 @@ def render_episode(req: EpisodeRenderRequest) -> dict:
             "subtitle": shot.subtitle,
             "narration": shot.narration,
             "dialogue": shot.dialogue,
+            "narrationUrl": voice.get("playbackUrl") if voice else "",
+            "narrationModel": voice.get("model") if voice else "",
+            "narrationVoice": voice.get("voice") if voice else "",
             "continuityAnchor": shot.continuityAnchor,
         })
     return {
@@ -107,4 +114,5 @@ def render_episode(req: EpisodeRenderRequest) -> dict:
         "totalDurationSeconds": sum(x["durationSeconds"] for x in rendered),
         "segments": rendered,
         "model": settings.veo_model,
+        "ttsModel": settings.tts_model if settings.enable_tts else "",
     }
