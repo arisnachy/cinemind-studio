@@ -27,14 +27,36 @@ export interface EpisodeRenderResult {
   ttsModel?: string;
 }
 
+function formatApiError(status: number, raw: string): string {
+  if (!raw) return `CINEMIND API error ${status}`;
+  try {
+    const parsed = JSON.parse(raw);
+    const detail = parsed?.detail;
+    if (typeof detail === 'string') return detail;
+    if (detail && typeof detail === 'object') {
+      const phase = detail.phase ? `[${detail.phase}] ` : '';
+      const type = detail.errorType ? `${detail.errorType}: ` : '';
+      return `${phase}${type}${detail.error || raw}`;
+    }
+  } catch {
+    // Keep the raw response below when the server/proxy returned non-JSON text.
+  }
+  return raw.length > 1200 ? `${raw.slice(0, 1200)}…` : raw;
+}
+
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
-    ...init,
-    headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) },
-  });
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      ...init,
+      headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) },
+    });
+  } catch (err) {
+    throw new Error(`Backend connection failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
   if (!response.ok) {
-    const body = await response.text();
-    throw new Error(body || `CINEMIND API error ${response.status}`);
+    const raw = await response.text();
+    throw new Error(formatApiError(response.status, raw));
   }
   return response.json() as Promise<T>;
 }
