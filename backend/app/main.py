@@ -9,13 +9,14 @@ from fastapi.staticfiles import StaticFiles
 from google.cloud import storage
 from .canon_service import analyze
 from .config import settings
+from .episode_render import render_episode
 from .gemini_service import studio
 from .memory import memory
-from .schemas import CanonAnalyzeRequest, CanonResolveRequest, GenerateTitleRequest, VideoRequest
+from .schemas import CanonAnalyzeRequest, CanonResolveRequest, EpisodeRenderRequest, GenerateTitleRequest, VideoRequest
 from .video_service import videos
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
-app = FastAPI(title="CINEMIND Studio", version="0.2.0")
+app = FastAPI(title="CINEMIND Studio", version="0.3.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
 
 @app.on_event("startup")
@@ -42,6 +43,7 @@ def health():
         "videoGeneration": settings.enable_video,
         "veoModel": settings.veo_model,
         "veoDurationSeconds": settings.veo_duration_seconds,
+        "episodeRenderMaxSeconds": 96,
     }
 
 @app.post("/api/studio/generate")
@@ -87,9 +89,19 @@ async def canon_resolve(req: CanonResolveRequest):
 @app.post("/api/media/video")
 def generate_video(req: VideoRequest):
     try:
-        return videos.generate(req.title)
+        return videos.generate(req.title, locale=req.locale)
     except Exception as exc:
         raise HTTPException(400, str(exc)) from exc
+
+@app.post("/api/episode/render")
+def generate_episode_cut(req: EpisodeRenderRequest):
+    if not studio.ready:
+        raise HTTPException(503, "Google Cloud is not configured")
+    try:
+        return render_episode(req)
+    except Exception as exc:
+        logging.exception("Episode render failed")
+        raise HTTPException(400, f"Episode render failed: {exc}") from exc
 
 @app.api_route("/api/media/video/content", methods=["GET", "HEAD"])
 def video_content(uri: str, request: Request):
