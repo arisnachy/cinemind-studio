@@ -20,7 +20,7 @@ const PIPELINE = [
   { label: 'Continuity validation', icon: ShieldCheck },
   { label: 'Veo cinematic shot production', icon: Clapperboard },
   { label: 'Gemini-TTS dialogue & narration', icon: Mic2 },
-  { label: 'Packaging playable episode', icon: CheckCircle2 },
+  { label: 'Composing continuous master cut', icon: CheckCircle2 },
 ];
 
 export const CreateStudioModal: React.FC<CreateStudioModalProps> = ({ isOpen, onClose, onTitleCreated, currentProfile, universes }) => {
@@ -52,8 +52,8 @@ export const CreateStudioModal: React.FC<CreateStudioModalProps> = ({ isOpen, on
     setIsGenerating(true);
     setStage(0);
     setError(null);
-    // This is an activity indicator, not fake server telemetry: the backend call
-    // returns only after the complete one-click production has finished.
+    // Activity indicator only. READY is not granted until the backend returns a
+    // single composed master file, not a loose playlist of Veo clips.
     const ticker = window.setInterval(() => setStage((s) => (s + 1) % PIPELINE.length), 9000);
     try {
       const newTitle = await studioApi.generateTitle({
@@ -66,14 +66,14 @@ export const CreateStudioModal: React.FC<CreateStudioModalProps> = ({ isOpen, on
         universeId: selectedUniverse,
         locale: getPreferredLocale(),
         autoProducePilot: true,
-        // Local validation cut: three 8-second Veo shots. Once continuity and
-        // story quality pass, production can scale without changing the model.
         pilotSeconds: 24,
         profile: currentProfile,
       });
       window.clearInterval(ticker);
       if (newTitle.productionStatus === 'FAILED') throw new Error(newTitle.productionError || 'The cinematic production failed before it was ready to play.');
-      if (newTitle.productionStatus !== 'READY' || !newTitle.productionSegments?.length) throw new Error('CINEMIND created the story but did not return a complete playable production.');
+      if (newTitle.productionStatus !== 'READY' || !newTitle.productionSegments?.length || !newTitle.productionPlaybackUrl) {
+        throw new Error('CINEMIND did not return a continuous viewer-ready master cut.');
+      }
       onTitleCreated(newTitle);
       setIsGenerating(false);
       onClose();
@@ -89,7 +89,7 @@ export const CreateStudioModal: React.FC<CreateStudioModalProps> = ({ isOpen, on
       <div className="fixed inset-0" onClick={() => !isGenerating && onClose()} />
       <div className="relative z-10 w-full max-w-3xl rounded-2xl bg-[#0e0e17] border border-purple-500/30 shadow-2xl p-6 sm:p-8 space-y-6">
         <div className="flex items-center justify-between border-b border-white/10 pb-4">
-          <div><h2 className="text-2xl font-black text-white">CINEMIND DIRECTOR STUDIO</h2><p className="text-xs text-purple-300 mt-1">One request → written universe → continuity lock → playable production.</p></div>
+          <div><h2 className="text-2xl font-black text-white">CINEMIND DIRECTOR STUDIO</h2><p className="text-xs text-purple-300 mt-1">One request → story → continuity lock → composed master → Play.</p></div>
           {!isGenerating && <button onClick={onClose} className="p-2 rounded-full bg-white/10 text-white"><X className="w-5 h-5" /></button>}
         </div>
 
@@ -97,7 +97,7 @@ export const CreateStudioModal: React.FC<CreateStudioModalProps> = ({ isOpen, on
 
         {!isGenerating ? <>
           <div className="rounded-xl bg-gradient-to-r from-purple-950/60 via-pink-950/30 to-black border border-purple-500/30 p-4 flex flex-col sm:flex-row gap-4 justify-between">
-            <div><span className="text-[10px] uppercase tracking-wider text-purple-300">Autonomous Showrunner</span><h4 className="font-bold mt-1">Create a complete original production from my taste</h4><p className="text-xs text-gray-400 mt-1">Validation mode produces a ready-to-play 24-second pilot cut with continuity references.</p></div>
+            <div><span className="text-[10px] uppercase tracking-wider text-purple-300">Autonomous Showrunner</span><h4 className="font-bold mt-1">Create a complete original production from my taste</h4><p className="text-xs text-gray-400 mt-1">Validation mode produces one continuous 24-second master cut with locked visual identity and localized voice.</p></div>
             <button onClick={() => start(true)} className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-purple-600 to-pink-600 font-bold text-sm">Auto Produce</button>
           </div>
 
@@ -111,13 +111,13 @@ export const CreateStudioModal: React.FC<CreateStudioModalProps> = ({ isOpen, on
             <div className="sm:col-span-2"><div className="flex justify-between text-xs text-gray-400"><span>Narrative complexity</span><span>{intensity}%</span></div><input type="range" min="50" max="100" value={intensity} onChange={(e)=>setIntensity(Number(e.target.value))} className="w-full accent-purple-500"/></div>
           </div>
 
-          <div className="rounded-xl bg-white/5 border border-white/10 p-3 text-[11px] text-gray-300 flex gap-2"><Database className="w-4 h-4 text-purple-300 shrink-0"/><span>Language: <b>{getPreferredLocale()}</b>. One-click production waits for the story, visual references, Veo shots and voice tracks before publishing.</span></div>
+          <div className="rounded-xl bg-white/5 border border-white/10 p-3 text-[11px] text-gray-300 flex gap-2"><Database className="w-4 h-4 text-purple-300 shrink-0"/><span>Language: <b>{getPreferredLocale()}</b>. CINEMIND does not publish until the voice mix and continuous master are ready.</span></div>
           <div className="flex justify-end"><button onClick={()=>start(false)} disabled={!prompt.trim()} className="px-8 py-3 rounded-xl bg-gradient-to-r from-purple-600 to-pink-600 font-bold disabled:opacity-40"><span className="flex items-center gap-2"><Sparkles className="w-4 h-4"/>Generate & Produce</span></button></div>
         </> : <div className="py-10 text-center space-y-6">
           <div className="w-16 h-16 mx-auto rounded-2xl bg-gradient-to-tr from-purple-600 to-pink-600 flex items-center justify-center animate-pulse"><Clapperboard className="w-8 h-8"/></div>
-          <div><h3 className="text-2xl font-black">PRODUCING, NOT MOCKING</h3><p className="text-xs text-purple-300 mt-1">Validation mode renders three Veo shots plus localized voice tracks. It should complete much faster than the previous 48-second test.</p></div>
+          <div><h3 className="text-2xl font-black">PRODUCING MASTER CUT</h3><p className="text-xs text-purple-300 mt-1">The viewer will receive one continuous video, not separate 8-second clips.</p></div>
           <div className="max-w-md mx-auto rounded-xl bg-white/5 border border-white/10 p-4 flex items-center gap-3 text-left"><StageIcon className="w-5 h-5 text-purple-300 animate-pulse"/><div><p className="text-xs uppercase text-gray-500">Production activity</p><p className="text-sm font-semibold">{stageLabel}</p></div></div>
-          <p className="text-[10px] text-gray-500">The activity label rotates while the single backend production job runs; it does not claim exact per-stage telemetry.</p>
+          <p className="text-[10px] text-gray-500">READY requires a single composed MP4 with localized voice mix and continuity metadata.</p>
         </div>}
       </div>
     </div>
