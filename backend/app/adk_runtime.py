@@ -11,6 +11,19 @@ from google.genai import types
 from .config import settings
 
 
+def _configure_vertex_environment() -> None:
+    """Make ADK use Vertex AI + Application Default Credentials.
+
+    The direct google-genai client is explicitly created with vertexai=True, but
+    ADK's Gemini wrapper reads its backend selection from environment variables.
+    Without this flag it falls back to the Gemini Developer API and asks for an
+    API key even when ADC is already configured.
+    """
+    os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "TRUE"
+    os.environ["GOOGLE_CLOUD_PROJECT"] = settings.project
+    os.environ["GOOGLE_CLOUD_LOCATION"] = settings.location
+
+
 def _clickhouse_toolset():
     if not settings.clickhouse_ready:
         return None
@@ -27,7 +40,6 @@ def _clickhouse_toolset():
         "CLICKHOUSE_DATABASE": settings.clickhouse_database,
         "CLICKHOUSE_SECURE": "true" if settings.clickhouse_secure else "false",
         "CLICKHOUSE_VERIFY": "true" if settings.clickhouse_verify else "false",
-        # MCP stays read-only. Deterministic application code performs writes.
         "CLICKHOUSE_ALLOW_WRITE_ACCESS": "false",
         "CLICKHOUSE_ALLOW_DROP": "false",
     })
@@ -46,6 +58,7 @@ def _clickhouse_toolset():
 
 
 def build_root_agent() -> Agent:
+    _configure_vertex_environment()
     memory_tools = _clickhouse_toolset()
     common_model = Gemini(model=settings.text_model, retry_options=types.HttpRetryOptions(attempts=3))
 
@@ -80,6 +93,7 @@ def build_root_agent() -> Agent:
 
 
 async def run_creative_room(prompt: str, viewer_id: str) -> str:
+    _configure_vertex_environment()
     root_agent = build_root_agent()
     runner = InMemoryRunner(app_name="cinemind", agent=root_agent)
     session = await runner.session_service.create_session(app_name="cinemind", user_id=viewer_id)
