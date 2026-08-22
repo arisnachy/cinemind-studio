@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from google.cloud import storage
 from .canon_service import analyze
+from .compositor_service import composer
 from .config import settings
 from .episode_render import render_episode
 from .gemini_service import studio
@@ -33,6 +34,7 @@ def health():
             clickhouse_ok = True
         except Exception:
             clickhouse_ok = False
+    composer_status = composer.preflight()
     return {
         "ok": True,
         "gemini": studio.ready,
@@ -51,6 +53,8 @@ def health():
         "continuityReferences": True,
         "firstFrameHandoff": True,
         "singleMasterPlayback": True,
+        "episodeComposer": composer_status.get("available", False),
+        "ffmpegExecutable": composer_status.get("executable", ""),
         "oneClickProduction": True,
     }
 
