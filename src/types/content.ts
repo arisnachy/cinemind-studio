@@ -95,10 +95,13 @@ export interface ProductionSegment {
   dialogue: string;
   dialogueSpeaker?: string;
   narrationUrl?: string;
+  narrationUri?: string;
   narrationModel?: string;
   narrationVoice?: string;
   continuityAnchor: string;
   referenceCount?: number;
+  firstFrameApplied?: boolean;
+  lastFrameUri?: string;
 }
 
 export interface Title {
@@ -136,9 +139,17 @@ export interface Title {
   videoPreviewUrl?: string;
   productionStatus?: 'WRITING' | 'RENDERING' | 'READY' | 'FAILED';
   productionSegments?: ProductionSegment[];
+  productionPlaybackUrl?: string;
+  productionVideoUri?: string;
+  productionComposition?: string;
   productionSummary?: string;
   productionLogline?: string;
-  productionContinuityLock?: { enabled?: boolean; referenceImages?: number };
+  productionContinuityLock?: {
+    enabled?: boolean;
+    referenceImages?: number;
+    sameSceneFirstFrameHandoff?: boolean;
+    singleMasterPlayback?: boolean;
+  };
   productionError?: string;
 }
 
