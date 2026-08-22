@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { X, Play, Pause, Volume2, VolumeX, Maximize2, Subtitles, Sparkles, BookOpen, Film, CheckCircle2, Loader2, Wand2 } from 'lucide-react';
+import { X, Play, Pause, Volume2, VolumeX, Maximize2, Subtitles, Sparkles, BookOpen, Film, CheckCircle2, Loader2, Wand2, AlertTriangle } from 'lucide-react';
 import { Title, Episode } from '../../types/content';
 import { artSrc } from '../../utils/art';
 import { studioApi } from '../../services/api';
@@ -11,34 +11,64 @@ interface CinemaPlayerModalProps {
 }
 
 export const CinemaPlayerModal: React.FC<CinemaPlayerModalProps> = ({ title, episode, onClose }) => {
-  const [isPlaying, setIsPlaying] = useState(true);
-  const [isMuted, setIsMuted] = useState(false);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [isMuted, setIsMuted] = useState(true);
   const [showSubtitles, setShowSubtitles] = useState(true);
   const [viewMode, setViewMode] = useState<'video' | 'script' | 'storyboard'>('video');
   const [progress, setProgress] = useState(0);
   const [videoUrl, setVideoUrl] = useState(title?.videoPreviewUrl || '');
+  const [videoError, setVideoError] = useState('');
   const [videoJob, setVideoJob] = useState<{loading:boolean; message:string}>({loading:false, message:''});
   const videoRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
     setVideoUrl(title?.videoPreviewUrl || '');
     setVideoJob({loading:false, message:''});
+    setVideoError('');
+    setProgress(0);
+    setIsPlaying(false);
+    setIsMuted(true);
   }, [title?.id, title?.videoPreviewUrl]);
+
+  useEffect(() => {
+    if (!videoUrl) return;
+    const frame = window.requestAnimationFrame(() => {
+      const video = videoRef.current;
+      if (!video) return;
+      video.muted = true;
+      setIsMuted(true);
+      setVideoError('');
+      video.load();
+      void video.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [videoUrl]);
 
   if (!title) return null;
   const currentItemTitle = episode ? `${title.title} — E${episode.episodeNumber}: ${episode.title}` : title.title;
   const currentSynopsis = episode ? episode.synopsis : title.synopsis;
 
   const togglePlay = () => {
-    if (!videoRef.current) return;
-    if (isPlaying) videoRef.current.pause(); else videoRef.current.play();
-    setIsPlaying(!isPlaying);
+    const video = videoRef.current;
+    if (!video) return;
+    if (video.paused) {
+      void video.play().catch((err) => setVideoError(`Playback was blocked: ${err instanceof Error ? err.message : String(err)}`));
+    } else {
+      video.pause();
+    }
+  };
+
+  const toggleMute = () => {
+    const next = !isMuted;
+    setIsMuted(next);
+    if (videoRef.current) videoRef.current.muted = next;
   };
 
   const generateVeoClip = async () => {
     setVideoJob({loading:true, message:'Submitting cinematic scene to Veo 3.1…'});
+    setVideoError('');
     try {
-      setVideoJob({loading:true, message:'Veo 3.1 is rendering a five-second original scene on Google Cloud. This can take a few minutes…'});
+      setVideoJob({loading:true, message:'Veo 3.1 is rendering an original cinematic scene on Google Cloud. This can take a few minutes…'});
       const result = await studioApi.generateVideo({ title, episodeId: episode?.id });
       setVideoUrl(result.playbackUrl);
       setVideoJob({loading:false, message:`Generated with ${result.model}.`});
@@ -65,7 +95,29 @@ export const CinemaPlayerModal: React.FC<CinemaPlayerModalProps> = ({ title, epi
         {viewMode === 'video' && (
           <div className="relative w-full h-full flex items-center justify-center bg-black">
             {videoUrl ? (
-              <video ref={videoRef} src={videoUrl} poster={artSrc(title.backdropUrl, title.title, 'backdrop')} autoPlay muted={isMuted} loop className="max-w-full max-h-full object-contain" onClick={togglePlay} onTimeUpdate={(e) => { const el=e.currentTarget; if(el.duration) setProgress((el.currentTime/el.duration)*100); }} />
+              <video
+                ref={videoRef}
+                src={videoUrl}
+                poster={artSrc(title.backdropUrl, title.title, 'backdrop')}
+                autoPlay
+                muted={isMuted}
+                playsInline
+                preload="auto"
+                loop
+                className="max-w-full max-h-full object-contain"
+                onClick={togglePlay}
+                onPlay={() => { setIsPlaying(true); setVideoError(''); }}
+                onPause={() => setIsPlaying(false)}
+                onLoadedData={() => setVideoError('')}
+                onError={(e) => {
+                  const media = e.currentTarget;
+                  const code = media.error?.code;
+                  const message = media.error?.message || 'The generated MP4 could not be decoded or streamed by this browser.';
+                  setVideoError(`Video playback error${code ? ` ${code}` : ''}: ${message}`);
+                  setIsPlaying(false);
+                }}
+                onTimeUpdate={(e) => { const el=e.currentTarget; if(el.duration) setProgress((el.currentTime/el.duration)*100); }}
+              />
             ) : (
               <div className="absolute inset-0 flex items-center justify-center">
                 <img src={artSrc(title.backdropUrl, title.title, 'backdrop')} alt={title.title} className="absolute inset-0 w-full h-full object-cover opacity-55" />
@@ -83,6 +135,7 @@ export const CinemaPlayerModal: React.FC<CinemaPlayerModalProps> = ({ title, epi
               </div>
             )}
             {videoUrl && showSubtitles && <div className="absolute bottom-28 left-1/2 -translate-x-1/2 bg-black/80 px-4 py-1.5 rounded-md text-sm text-yellow-300 text-center font-medium max-w-xl border border-white/10 backdrop-blur-md">CINEMIND · Original AI-generated scene</div>}
+            {videoUrl && videoError && <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-20 max-w-xl rounded-xl border border-amber-400/30 bg-black/90 p-4 text-amber-100 shadow-2xl"><div className="flex items-start gap-3"><AlertTriangle className="w-5 h-5 mt-0.5 text-amber-400 shrink-0"/><div><p className="font-bold">Generated file received, playback failed</p><p className="text-xs mt-1 text-amber-100/80 break-words">{videoError}</p><button onClick={() => { const video=videoRef.current; if(video){ setVideoError(''); video.load(); void video.play(); } }} className="mt-3 px-3 py-1.5 rounded-lg bg-white text-black text-xs font-bold">Reload video</button></div></div></div>}
           </div>
         )}
 
@@ -107,7 +160,7 @@ export const CinemaPlayerModal: React.FC<CinemaPlayerModalProps> = ({ title, epi
         <div className="flex items-center justify-between">
           <div className="flex items-center space-x-4">
             <button onClick={togglePlay} disabled={!videoUrl} className="p-3 rounded-full bg-white hover:bg-gray-200 text-black shadow-lg disabled:opacity-40">{isPlaying ? <Pause className="w-5 h-5 fill-current" /> : <Play className="w-5 h-5 fill-current ml-0.5" />}</button>
-            <button onClick={() => setIsMuted(!isMuted)} disabled={!videoUrl} className="p-2 text-gray-300 hover:text-white disabled:opacity-40">{isMuted ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}</button>
+            <button onClick={toggleMute} disabled={!videoUrl} className="p-2 text-gray-300 hover:text-white disabled:opacity-40">{isMuted ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}</button>
             <div className="hidden sm:flex items-center space-x-2 text-xs text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-full border border-emerald-500/20"><CheckCircle2 className="w-3.5 h-3.5" /><span>{videoUrl ? 'Veo output streaming' : 'Original media only'}</span></div>
           </div>
           <div className="flex items-center space-x-3 text-gray-300"><button onClick={() => setShowSubtitles(!showSubtitles)} className={`p-2 rounded-lg ${showSubtitles ? 'text-purple-400 bg-white/10' : 'hover:text-white'}`}><Subtitles className="w-5 h-5" /></button><button onClick={() => !document.fullscreenElement ? document.documentElement.requestFullscreen() : document.exitFullscreen()} className="p-2 hover:text-white"><Maximize2 className="w-5 h-5" /></button></div>
