@@ -28,48 +28,61 @@ class ReferenceService:
         return f"gs://{bucket_name}/{object_name}"
 
     def build_for_title(self, title: dict) -> list[str]:
-        """Create up to three canonical asset references for Veo.
+        """Build a quota-efficient continuity lock for Veo.
 
-        Veo 3.1 accepts 1-3 asset images. We prioritize the two lead characters
-        and one master location/style frame so every shot shares the same visual DNA.
+        Reuse the key art that CINEMIND already generated before video production:
+        poster = protagonist identity anchor, backdrop = primary-location anchor.
+        Only attempt an additional dedicated character image if quota allows.
+        Production fails closed if fewer than two useful anchors exist.
         """
         if not settings.enable_images or not settings.video_gcs_uri:
-            return []
+            raise RuntimeError("Continuity Lock requires image generation and a writable GCS media bucket")
+
         refs: list[str] = []
         cast = title.get("cast", []) or []
-        for character in cast[:2]:
+        meta = title.get("_cinemind", {}) or {}
+
+        # 1) Reuse already-generated protagonist-oriented poster.
+        poster_uri = self._upload_data_url(title.get("posterUrl", ""), "protagonist-master")
+        if poster_uri:
+            refs.append(poster_uri)
+            if cast:
+                cast[0]["referenceImageUri"] = poster_uri
+            meta["protagonistReferenceUri"] = poster_uri
+
+        # 2) Reuse already-generated location/style backdrop.
+        backdrop_uri = self._upload_data_url(title.get("backdropUrl", ""), "location-master")
+        if backdrop_uri and backdrop_uri not in refs:
+            refs.append(backdrop_uri)
+            meta["locationReferenceUri"] = backdrop_uri
+
+        # 3) Optional second speaking character. This is the only extra image request
+        # during continuity setup, avoiding the 3-request burst that exhausted quota.
+        if len(refs) < 3 and len(cast) > 1:
+            character = cast[1]
             prompt = (
-                "Original fictional adult character reference image for a premium cinematic series. "
+                "Original fictional adult character identity reference for a premium scripted television series. "
                 f"Character name: {character.get('name')}. Role: {character.get('role')}. "
                 f"Canonical appearance: {character.get('visualDescriptor')}. "
-                "Neutral three-quarter full-body pose, face clearly visible, single consistent wardrobe, "
-                "production concept-art realism, natural skin texture, clean unobtrusive background, 16:9 crop-safe. "
-                "No text, no logos, no real actor likeness, no copyrighted character resemblance."
+                "Clear face, three-quarter body, exact stable wardrobe, neutral practical lighting, realistic production reference. "
+                "No text, logos, real actor likeness, franchise resemblance, montage, or extra people."
             )
             data_url = studio.generate_image_data_url(prompt, "16:9")
-            uri = self._upload_data_url(data_url, f"character-{character.get('name','lead')}")
+            uri = self._upload_data_url(data_url, f"character-{character.get('name','second-lead')}")
             if uri:
                 refs.append(uri)
                 character["referenceImageUri"] = uri
 
-        if len(refs) < 3:
-            meta = title.get("_cinemind", {}) or {}
-            premise = meta.get("universePremise") or title.get("synopsis", "")
-            location_prompt = (
-                "Original master location reference frame for a premium cinematic television series. "
-                f"Universe: {title.get('universeName')}. Story premise: {premise}. "
-                f"Genres: {', '.join(title.get('genres', [])[:3])}. Tones: {', '.join(title.get('tones', [])[:3])}. "
-                "Establish a distinctive primary location, consistent architecture, color palette, practical lighting, "
-                "production design and camera texture that can be reused across shots. Empty set, no people, no text, no logos."
-            )
-            data_url = studio.generate_image_data_url(location_prompt, "16:9")
-            uri = self._upload_data_url(data_url, "master-location")
-            if uri:
-                refs.append(uri)
-                meta["locationReferenceUri"] = uri
-                title["_cinemind"] = meta
-
+        title["_cinemind"] = meta
+        refs = refs[:3]
         log.info("Continuity lock created %d Veo asset references", len(refs))
-        return refs[:3]
+
+        if len(refs) < 2:
+            raise RuntimeError(
+                "CONTINUITY_LOCK_UNAVAILABLE: fewer than two visual anchors were available. "
+                "CINEMIND will not spend Veo credits on an identity-unstable production. "
+                "Wait for Gemini image quota to recover and retry."
+            )
+        return refs
 
 references = ReferenceService()
