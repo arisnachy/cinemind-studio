@@ -1,6 +1,6 @@
 [project]
 name = "cinemind-backend"
-version = "0.3.0"
+version = "0.4.0"
 description = "CINEMIND Studio Google Cloud agent runtime"
 requires-python = ">=3.11"
 dependencies = [
@@ -13,6 +13,7 @@ dependencies = [
   "mcp-clickhouse>=0.3.0,<1",
   "clickhouse-connect>=0.11,<1",
   "google-cloud-storage>=3.2,<4",
+  "imageio-ffmpeg>=0.6,<1",
 ]
 
 [tool.uv]
