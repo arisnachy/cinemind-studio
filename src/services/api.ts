@@ -1,4 +1,4 @@
-import { TasteProfile, Title } from '../types/content';
+import { ProductionSegment, TasteProfile, Title } from '../types/content';
 
 export interface GenerateTitleRequest {
   prompt: string;
@@ -9,22 +9,12 @@ export interface GenerateTitleRequest {
   intensity: number;
   universeId?: string;
   locale: string;
+  autoProducePilot?: boolean;
+  pilotSeconds?: number;
   profile: TasteProfile;
 }
 
-export interface EpisodeRenderSegment {
-  shotNumber: number;
-  playbackUrl: string;
-  videoUri: string;
-  durationSeconds: number;
-  subtitle: string;
-  narration: string;
-  dialogue: string;
-  narrationUrl: string;
-  narrationModel: string;
-  narrationVoice: string;
-  continuityAnchor: string;
-}
+export interface EpisodeRenderSegment extends ProductionSegment {}
 
 export interface EpisodeRenderResult {
   status: string;
