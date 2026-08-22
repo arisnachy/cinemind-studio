@@ -1,6 +1,6 @@
 [project]
 name = "cinemind-backend"
-version = "0.2.0"
+version = "0.3.0"
 description = "CINEMIND Studio Google Cloud agent runtime"
 requires-python = ">=3.11"
 dependencies = [
@@ -8,7 +8,7 @@ dependencies = [
   "uvicorn[standard]>=0.35,<1",
   "pydantic>=2.11,<3",
   "python-dotenv>=1.1,<2",
-  "google-genai>=1.33,<2",
+  "google-genai>=1.54,<2",
   "google-adk[gcp]>=2.0.0,<3",
   "mcp-clickhouse>=0.3.0,<1",
   "clickhouse-connect>=0.11,<1",
