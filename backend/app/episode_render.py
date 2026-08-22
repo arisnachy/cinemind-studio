@@ -66,6 +66,7 @@ CONTINUITY CONTRACT:
 - Use at most two speaking characters in this short cut.
 - visualPromptEnglish must be English and describe cinematography + subject + action + context + style.
 - narration/dialogue/subtitle must be natural {req.locale}.
+- Never put narration and character dialogue in the same short shot. Choose one or the other.
 - Every continuityAnchor must repeat immutable identity details: face/hair/age/wardrobe/signature prop + set/lighting/time-of-day.
 - Dialogue must be short, specific, motivated and speakable within the shot.
 - No generic mysterious whispers, random breathing, abstract glitches, unexplained creatures, unrelated symbols or cinematic filler.
@@ -117,14 +118,23 @@ Stage exactly this story beat. It must visibly follow the prior dramatic action;
             extend_from_uri=previous_video_uri if same_scene_continuation else "",
         )
 
-        voice_parts = []
-        if req.includeNarration and shot.narration:
-            voice_parts.append(shot.narration)
+        # One clean spoken source per short shot. Character voices are stable across
+        # the whole series; narration uses the configured narrator voice.
+        voice_text = ""
+        voice_name = settings.tts_voice
+        voice_role = "narrator"
         if shot.dialogue:
-            speaker = f"{shot.dialogueSpeaker}: " if shot.dialogueSpeaker else ""
-            voice_parts.append(f"{speaker}{shot.dialogue}")
-        voice_text = " ".join(voice_parts).strip()
-        voice = narration.synthesize_to_gcs(voice_text, req.locale) if voice_text else None
+            voice_text = shot.dialogue.strip()
+            voice_name = narration.voice_for_character(shot.dialogueSpeaker or (shot.characters[0] if shot.characters else "character"))
+            voice_role = shot.dialogueSpeaker or "character"
+        elif req.includeNarration and shot.narration:
+            voice_text = shot.narration.strip()
+        voice = narration.synthesize_to_gcs(
+            voice_text,
+            req.locale,
+            style="restrained premium drama; believable conversational delivery; no announcer voice",
+            voice_name=voice_name,
+        ) if voice_text else None
 
         rendered.append({
             "shotNumber": index,
@@ -144,6 +154,7 @@ Stage exactly this story beat. It must visibly follow the prior dramatic action;
             "narrationUrl": voice.get("playbackUrl") if voice else "",
             "narrationModel": voice.get("model") if voice else "",
             "narrationVoice": voice.get("voice") if voice else "",
+            "voiceRole": voice_role if voice else "",
             "continuityAnchor": shot.continuityAnchor,
             "referenceCount": result.get("referenceCount", 0),
             "continuedFromPreviousShot": result.get("continuedFromPreviousShot", False),
