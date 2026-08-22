@@ -72,6 +72,7 @@ CONTINUITY CONTRACT:
 - No generic mysterious whispers, random breathing, abstract glitches, unexplained creatures, unrelated symbols or cinematic filler.
 - No new character, prop or location may appear unless the prior beat establishes why it enters.
 - The final shot must make sense even to a viewer who saw only the preceding shots.
+- Every shot is rendered as its own 8-second Veo reference-image clip. Therefore each visual prompt MUST re-state the exact state inherited from the previous shot: where each character is standing, what they are holding, their emotional state, the last visible action, and what changes in this shot.
 """.strip()
 
     response = studio.client().models.generate_content(
@@ -92,11 +93,15 @@ def render_episode(req: EpisodeRenderRequest) -> dict:
     plan = build_plan(req)
     reference_uris = references.build_for_title(req.title)
     rendered = []
-    previous_scene_id = ""
-    previous_video_uri = ""
 
+    # IMPORTANT: do not chain Veo video-extension calls here. Veo extensions are
+    # capped at 30 seconds total. Re-extending an 8s clip grows roughly
+    # 8 -> 15 -> 22 -> 29 -> 36 and fails on the fifth continuation. CINEMIND
+    # instead renders each shot as an independent 8s clip using the SAME locked
+    # visual references. This allows arbitrarily long episodes while keeping
+    # per-shot TTS/subtitles aligned. First/last-frame continuity can be added
+    # later without reintroducing the 30-second extension ceiling.
     for index, shot in enumerate(plan.shots, start=1):
-        same_scene_continuation = bool(previous_video_uri and previous_scene_id and shot.sceneId == previous_scene_id)
         shot_prompt = f"""
 SCENE {shot.sceneId} — STORY BEAT: {shot.storyBeat}
 PURPOSE: {shot.scenePurpose}
@@ -107,6 +112,7 @@ CONTINUITY LOCK: {shot.continuityAnchor}
 ACTION AND CINEMATOGRAPHY: {shot.visualPromptEnglish}
 
 Stage exactly this story beat. It must visibly follow the prior dramatic action; do not create a montage or generic establishing clip.
+The supplied reference assets are IMMUTABLE identity/production anchors. Match them closely. Preserve faces, age, hair, wardrobe, signature props, set architecture, lighting direction and color language. Do not redesign characters between shots.
 """.strip()
 
         result = videos.generate_prompt(
@@ -114,8 +120,8 @@ Stage exactly this story beat. It must visibly follow the prior dramatic action;
             locale=req.locale,
             narration="",
             dialogue="",
-            reference_uris=reference_uris if not same_scene_continuation else [],
-            extend_from_uri=previous_video_uri if same_scene_continuation else "",
+            reference_uris=reference_uris,
+            extend_from_uri="",
         )
 
         # One clean spoken source per short shot. Character voices are stable across
@@ -157,10 +163,8 @@ Stage exactly this story beat. It must visibly follow the prior dramatic action;
             "voiceRole": voice_role if voice else "",
             "continuityAnchor": shot.continuityAnchor,
             "referenceCount": result.get("referenceCount", 0),
-            "continuedFromPreviousShot": result.get("continuedFromPreviousShot", False),
+            "continuedFromPreviousShot": False,
         })
-        previous_scene_id = shot.sceneId
-        previous_video_uri = result["videoUri"]
 
     return {
         "status": "READY",
@@ -179,6 +183,7 @@ Stage exactly this story beat. It must visibly follow the prior dramatic action;
         "continuityLock": {
             "enabled": bool(reference_uris),
             "referenceImages": len(reference_uris),
-            "sameSceneVideoExtension": True,
+            "sameSceneVideoExtension": False,
+            "strategy": "locked-reference-per-shot",
         },
     }
