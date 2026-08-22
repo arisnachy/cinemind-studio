@@ -12,9 +12,11 @@ export interface Episode {
   durationMinutes: number;
   thumbnailUrl: string;
   status: EpisodeStatus;
-  watchedPercentage?: number; // 0 - 100
+  watchedPercentage?: number;
   releaseDate?: string;
   directorNotes?: string;
+  renderedSeconds?: number;
+  renderedSegments?: number;
 }
 
 export interface Character {
@@ -27,6 +29,7 @@ export interface Character {
   relationships: string[];
   knowledgeState: string;
   avatarUrl: string;
+  referenceImageUri?: string;
   status: 'Alive' | 'Missing' | 'Transformed' | 'Deceased';
 }
 
@@ -35,8 +38,8 @@ export interface CanonFact {
   universeId: string;
   fact: string;
   category: 'World Rule' | 'Historical Event' | 'Technology' | 'Character Truth';
-  confidenceScore: number; // 0.0 - 1.0
-  firstEstablishedIn: string; // Episode or Movie title
+  confidenceScore: number;
+  firstEstablishedIn: string;
   canonVersion: string;
 }
 
@@ -57,12 +60,8 @@ export interface Universe {
   premise: string;
   heroBackdropUrl: string;
   posterUrl: string;
-  themeColors: {
-    primary: string;
-    secondary: string;
-    accent: string;
-  };
-  canonHealthPercent: number; // e.g. 99.4%
+  themeColors: { primary: string; secondary: string; accent: string };
+  canonHealthPercent: number;
   canonVersion: string;
   worldRules: string[];
   activeArc: string;
@@ -80,6 +79,28 @@ export interface WhyCreatedFactor {
   sourceSignal: string;
 }
 
+export interface ProductionSegment {
+  shotNumber: number;
+  sceneId?: string;
+  storyBeat?: string;
+  scenePurpose?: string;
+  location?: string;
+  characters?: string[];
+  shotType?: string;
+  playbackUrl: string;
+  videoUri: string;
+  durationSeconds: number;
+  subtitle: string;
+  narration: string;
+  dialogue: string;
+  dialogueSpeaker?: string;
+  narrationUrl?: string;
+  narrationModel?: string;
+  narrationVoice?: string;
+  continuityAnchor: string;
+  referenceCount?: number;
+}
+
 export interface Title {
   id: string;
   universeId: string;
@@ -89,12 +110,12 @@ export interface Title {
   synopsis: string;
   type: ContentType;
   releaseYear: number;
-  rating: string; // 'TV-MA' | 'PG-13' | 'TV-14'
-  duration?: string; // '2h 14m' for movies or '3 Seasons'
-  matchScore: number; // e.g. 98
+  rating: string;
+  duration?: string;
+  matchScore: number;
   genres: string[];
   tones: string[];
-  badges: string[]; // e.g. ['4K HDR', 'Dolby Atmos', 'Created For You', 'New Episode Today']
+  badges: string[];
   backdropUrl: string;
   posterUrl: string;
   logoText?: string;
@@ -113,6 +134,12 @@ export interface Title {
   canonStatus: 'Canonical' | 'Alternate Timeline' | 'Evolving';
   hasGeneratedVideo?: boolean;
   videoPreviewUrl?: string;
+  productionStatus?: 'WRITING' | 'RENDERING' | 'READY' | 'FAILED';
+  productionSegments?: ProductionSegment[];
+  productionSummary?: string;
+  productionLogline?: string;
+  productionContinuityLock?: { enabled?: boolean; referenceImages?: number };
+  productionError?: string;
 }
 
 export interface TasteProfile {
@@ -124,11 +151,7 @@ export interface TasteProfile {
   narrativePacing: 'Fast & High-Stakes' | 'Deep Psychological & Atmospheric' | 'Complex Nonlinear' | 'Character-Driven Ensemble';
   currentObsession: string;
   universesFollowed: string[];
-  stats: {
-    titlesGenerated: number;
-    episodesWatched: number;
-    canonInterventions: number;
-  };
+  stats: { titlesGenerated: number; episodesWatched: number; canonInterventions: number };
 }
 
 export interface CanonContradiction {
