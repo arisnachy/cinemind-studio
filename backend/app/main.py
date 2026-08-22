@@ -43,7 +43,11 @@ def health():
         "videoGeneration": settings.enable_video,
         "veoModel": settings.veo_model,
         "veoDurationSeconds": settings.veo_duration_seconds,
+        "ttsGeneration": settings.enable_tts,
+        "ttsModel": settings.tts_model,
+        "ttsVoice": settings.tts_voice,
         "episodeRenderMaxSeconds": 96,
+        "localeAwareGeneration": True,
     }
 
 @app.post("/api/studio/generate")
@@ -106,25 +110,25 @@ def generate_episode_cut(req: EpisodeRenderRequest):
 @app.api_route("/api/media/video/content", methods=["GET", "HEAD"])
 def video_content(uri: str, request: Request):
     if not uri.startswith("gs://"):
-        raise HTTPException(400, "Only gs:// Veo outputs are supported")
+        raise HTTPException(400, "Only gs:// generated media outputs are supported")
     bucket_name, _, blob_name = uri[5:].partition("/")
     if not bucket_name or not blob_name:
-        raise HTTPException(400, "Invalid GCS video URI")
+        raise HTTPException(400, "Invalid GCS media URI")
 
     blob = storage.Client(project=settings.project).bucket(bucket_name).blob(blob_name)
     try:
         blob.reload()
     except Exception as exc:
-        raise HTTPException(404, "Generated video is not available yet") from exc
+        raise HTTPException(404, "Generated media is not available yet") from exc
 
     total = int(blob.size or 0)
     if total <= 0:
-        raise HTTPException(404, "Generated video is empty")
+        raise HTTPException(404, "Generated media is empty")
 
     common_headers = {
         "Accept-Ranges": "bytes",
         "Cache-Control": "private, max-age=3600",
-        "Content-Type": blob.content_type or "video/mp4",
+        "Content-Type": blob.content_type or "application/octet-stream",
     }
     range_header = request.headers.get("range")
 
@@ -133,7 +137,7 @@ def video_content(uri: str, request: Request):
 
     if not range_header:
         data = blob.download_as_bytes()
-        return Response(content=data, status_code=200, media_type=blob.content_type or "video/mp4", headers={**common_headers, "Content-Length": str(total)})
+        return Response(content=data, status_code=200, media_type=blob.content_type or "application/octet-stream", headers={**common_headers, "Content-Length": str(total)})
 
     try:
         unit, spec = range_header.split("=", 1)
@@ -162,7 +166,7 @@ def video_content(uri: str, request: Request):
         "Content-Range": f"bytes {start}-{end}/{total}",
         "Content-Length": str(length),
     }
-    return Response(content=data, status_code=206, media_type=blob.content_type or "video/mp4", headers=headers)
+    return Response(content=data, status_code=206, media_type=blob.content_type or "application/octet-stream", headers=headers)
 
 DIST = Path(os.getenv("CINEMIND_DIST", "/app/dist"))
 if DIST.exists():
