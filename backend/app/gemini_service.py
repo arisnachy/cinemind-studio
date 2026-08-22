@@ -1,8 +1,6 @@
 from __future__ import annotations
 import base64
-import json
 import logging
-import re
 import uuid
 from datetime import datetime
 from google import genai
@@ -39,6 +37,7 @@ Primary genre: {req.genre}
 Mood: {req.mood}
 Complexity: {req.intensity}/100
 Existing universe id: {req.universeId or 'new universe'}
+Viewer locale: {req.locale}
 Director brief: {req.prompt or 'Autonomously invent the strongest original concept for this viewer.'}
 
 Use ClickHouse narrative memory when available. Develop an original concept and have the specialist agents challenge it for character depth and continuity.
@@ -59,6 +58,11 @@ DIRECTOR REQUEST:
 MULTI-AGENT CREATIVE ROOM MEMO:
 {room_memo or 'No memo was available; create the concept directly while preserving originality.'}
 
+LANGUAGE REQUIREMENT:
+- All user-facing creative text (title, tagline, synopsis, character roles/motivations, episode titles/synopses, director notes, whyCreated, and canonFacts) MUST be written naturally for locale {req.locale}.
+- Keep backdropPrompt, posterPrompt and teaserPrompt in ENGLISH because Google visual/video generation models are directed internally in English.
+- Proper nouns may remain original unless localization improves readability.
+
 Requirements:
 - Make the title memorable and commercially plausible.
 - Characters must have distinct motivations and explicit knowledge state for continuity.
@@ -66,7 +70,7 @@ Requirements:
 - canonFacts must be atomic facts that can be stored and queried later.
 - whyCreated must explain audience-fit without pretending to know signals not supplied above.
 - backdropPrompt and posterPrompt must describe original cinematic art with no real actor likenesses, text, logos or copyrighted visual properties.
-- teaserPrompt must be suitable for a short Veo cinematic clip.
+- teaserPrompt must be suitable for a short Veo cinematic clip and MUST remain in English.
 """.strip()
         response = self.client().models.generate_content(
             model=settings.text_model,
@@ -111,7 +115,7 @@ Requirements:
         backdrop = self.generate_image_data_url(bp.backdropPrompt, "16:9")
         poster = self.generate_image_data_url(bp.posterPrompt, "3:4")
         chars = []
-        for index, c in enumerate(bp.characters):
+        for c in bp.characters:
             chars.append({
                 "id": f"char-{uuid.uuid4().hex[:10]}", "universeId": universe_id, "name": c.name,
                 "role": c.role, "visualDescriptor": c.visualDescriptor, "motivation": c.motivation,
@@ -154,6 +158,7 @@ Requirements:
                 "canonFacts": bp.canonFacts,
                 "universePremise": bp.universePremise,
                 "teaserPrompt": bp.teaserPrompt,
+                "locale": req.locale,
                 "generatedBy": settings.text_model,
             },
         }
