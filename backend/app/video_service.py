@@ -20,10 +20,7 @@ class VideoService:
         if not settings.video_gcs_uri:
             raise RuntimeError("CINEMIND_VIDEO_GCS_URI must point to a writable gs:// bucket prefix")
 
-        audio_direction = (
-            f"\nAUDIO DIRECTION: Preserve restrained cinematic environmental sound. "
-            f"All spoken audio, if any, must be natural for locale {locale}. "
-        )
+        audio_direction = f"\nAUDIO DIRECTION: Preserve restrained cinematic environmental sound. All spoken audio, if any, must be natural for locale {locale}. "
         if narration:
             audio_direction += f"A narrator clearly says, in {locale}: {narration!r}. "
         if dialogue:
@@ -32,7 +29,7 @@ class VideoService:
             audio_direction += "Use only purposeful diegetic ambience; no random moans, breaths, vocalizations or filler speech. "
 
         continuity_instruction = (
-            "This shot EXTENDS the supplied previous shot. Begin from its exact visual state and continue the same characters, wardrobe, props, lighting, geography and dramatic action without resetting the scene. "
+            "This shot EXTENDS the supplied previous shot. Begin from its exact final visual state and continue the same characters, wardrobe, props, lighting, geography and dramatic action without resetting the scene. "
             if extend_from_uri else
             "Use the supplied asset references as immutable identity and production-design anchors. Preserve facial structure, hair, age, wardrobe, props, geography, lighting direction and lens family. "
         )
@@ -45,34 +42,39 @@ class VideoService:
             f"{audio_direction}"
         )
 
-        refs = []
-        if not extend_from_uri:
+        if extend_from_uri:
+            operation = studio.client().models.generate_videos(
+                model=settings.veo_model,
+                prompt=final_prompt,
+                video=types.Video(uri=extend_from_uri, mime_type="video/mp4"),
+                config=types.GenerateVideosConfig(output_gcs_uri=settings.video_gcs_uri),
+            )
+            duration = 7
+            refs = []
+        else:
+            refs = []
             for uri in (reference_uris or [])[:3]:
                 if uri:
                     refs.append(types.VideoGenerationReferenceImage(
                         image=types.Image(gcs_uri=uri, mime_type="image/png"),
                         reference_type="asset",
                     ))
+            config_kwargs = {
+                "number_of_videos": 1,
+                "duration_seconds": 8 if refs else settings.veo_duration_seconds,
+                "enhance_prompt": True,
+                "aspect_ratio": "16:9",
+                "output_gcs_uri": settings.video_gcs_uri,
+            }
+            if refs:
+                config_kwargs["reference_images"] = refs
+            operation = studio.client().models.generate_videos(
+                model=settings.veo_model,
+                prompt=final_prompt,
+                config=types.GenerateVideosConfig(**config_kwargs),
+            )
+            duration = 8 if refs else settings.veo_duration_seconds
 
-        config_kwargs = {
-            "number_of_videos": 1,
-            "duration_seconds": 8 if refs else settings.veo_duration_seconds,
-            "enhance_prompt": True,
-            "aspect_ratio": "16:9",
-            "output_gcs_uri": settings.video_gcs_uri,
-        }
-        if refs:
-            config_kwargs["reference_images"] = refs
-
-        call_kwargs = {
-            "model": settings.veo_model,
-            "prompt": final_prompt,
-            "config": types.GenerateVideosConfig(**config_kwargs),
-        }
-        if extend_from_uri:
-            call_kwargs["video"] = types.Video(uri=extend_from_uri, mime_type="video/mp4")
-
-        operation = studio.client().models.generate_videos(**call_kwargs)
         deadline = time.time() + 720
         while not operation.done and time.time() < deadline:
             time.sleep(10)
@@ -85,7 +87,6 @@ class VideoService:
         if not generated:
             raise RuntimeError("Veo completed without a generated video")
         uri = generated[0].video.uri
-        duration = 8 if refs else settings.veo_duration_seconds
         return {
             "status": "DONE",
             "videoUri": uri,
