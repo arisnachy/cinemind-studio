@@ -2,9 +2,9 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from google.cloud import storage
 from .canon_service import analyze
@@ -91,17 +91,66 @@ def generate_video(req: VideoRequest):
     except Exception as exc:
         raise HTTPException(400, str(exc)) from exc
 
-@app.get("/api/media/video/content")
-def video_content(uri: str):
+@app.api_route("/api/media/video/content", methods=["GET", "HEAD"])
+def video_content(uri: str, request: Request):
     if not uri.startswith("gs://"):
         raise HTTPException(400, "Only gs:// Veo outputs are supported")
     bucket_name, _, blob_name = uri[5:].partition("/")
     if not bucket_name or not blob_name:
         raise HTTPException(400, "Invalid GCS video URI")
+
     blob = storage.Client(project=settings.project).bucket(bucket_name).blob(blob_name)
-    if not blob.exists():
-        raise HTTPException(404, "Generated video is not available yet")
-    return StreamingResponse(blob.open("rb"), media_type="video/mp4", headers={"Cache-Control": "private, max-age=3600"})
+    try:
+        blob.reload()
+    except Exception as exc:
+        raise HTTPException(404, "Generated video is not available yet") from exc
+
+    total = int(blob.size or 0)
+    if total <= 0:
+        raise HTTPException(404, "Generated video is empty")
+
+    common_headers = {
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "private, max-age=3600",
+        "Content-Type": blob.content_type or "video/mp4",
+    }
+    range_header = request.headers.get("range")
+
+    if request.method == "HEAD":
+        return Response(status_code=200, headers={**common_headers, "Content-Length": str(total)})
+
+    if not range_header:
+        data = blob.download_as_bytes()
+        return Response(content=data, status_code=200, media_type=blob.content_type or "video/mp4", headers={**common_headers, "Content-Length": str(total)})
+
+    try:
+        unit, spec = range_header.split("=", 1)
+        if unit.strip().lower() != "bytes" or "," in spec:
+            raise ValueError("unsupported range")
+        start_text, end_text = spec.split("-", 1)
+        if start_text:
+            start = int(start_text)
+            end = int(end_text) if end_text else total - 1
+        else:
+            suffix = int(end_text)
+            if suffix <= 0:
+                raise ValueError("invalid suffix")
+            start = max(total - suffix, 0)
+            end = total - 1
+        if start < 0 or start >= total or end < start:
+            raise ValueError("invalid range")
+        end = min(end, total - 1)
+    except (ValueError, TypeError):
+        return Response(status_code=416, headers={**common_headers, "Content-Range": f"bytes */{total}"})
+
+    data = blob.download_as_bytes(start=start, end=end)
+    length = end - start + 1
+    headers = {
+        **common_headers,
+        "Content-Range": f"bytes {start}-{end}/{total}",
+        "Content-Length": str(length),
+    }
+    return Response(content=data, status_code=206, media_type=blob.content_type or "video/mp4", headers=headers)
 
 DIST = Path(os.getenv("CINEMIND_DIST", "/app/dist"))
 if DIST.exists():
