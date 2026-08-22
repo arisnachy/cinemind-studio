@@ -13,6 +13,7 @@ class VideoService:
         narration: str = "",
         dialogue: str = "",
         reference_uris: list[str] | None = None,
+        extend_from_uri: str = "",
     ) -> dict:
         if not settings.enable_video:
             raise RuntimeError("Video generation is disabled. Set CINEMIND_ENABLE_VIDEO_GENERATION=true when you want to spend Veo credits.")
@@ -30,40 +31,48 @@ class VideoService:
         if not narration and not dialogue:
             audio_direction += "Use only purposeful diegetic ambience; no random moans, breaths, vocalizations or filler speech. "
 
+        continuity_instruction = (
+            "This shot EXTENDS the supplied previous shot. Begin from its exact visual state and continue the same characters, wardrobe, props, lighting, geography and dramatic action without resetting the scene. "
+            if extend_from_uri else
+            "Use the supplied asset references as immutable identity and production-design anchors. Preserve facial structure, hair, age, wardrobe, props, geography, lighting direction and lens family. "
+        )
         final_prompt = (
             f"{prompt.strip()}\n"
-            "PREMIUM SERIES DIRECTION: Treat this as a shot from one continuous television episode, not a standalone montage. "
-            "Preserve identity, facial structure, hair, age, wardrobe, props, geography, lighting direction, lens family and time of day. "
-            "Do not introduce new characters or locations unless explicitly directed. Avoid jumpy montage logic. "
+            "PREMIUM SERIES DIRECTION: This is one causally connected shot from a scripted television episode, not a trailer montage. "
+            f"{continuity_instruction}"
+            "Do not introduce new characters or locations unless explicitly directed. Avoid random symbolic imagery. "
             "This is an original CINEMIND production. No real actors, copyrighted characters, logos, or franchise visual identity. "
             f"{audio_direction}"
         )
 
         refs = []
-        for uri in (reference_uris or [])[:3]:
-            if uri:
-                refs.append(
-                    types.VideoGenerationReferenceImage(
+        if not extend_from_uri:
+            for uri in (reference_uris or [])[:3]:
+                if uri:
+                    refs.append(types.VideoGenerationReferenceImage(
                         image=types.Image(gcs_uri=uri, mime_type="image/png"),
                         reference_type="asset",
-                    )
-                )
+                    ))
 
-        config_kwargs = dict(
-            number_of_videos=1,
-            duration_seconds=settings.veo_duration_seconds,
-            enhance_prompt=True,
-            aspect_ratio="16:9",
-            output_gcs_uri=settings.video_gcs_uri,
-        )
+        config_kwargs = {
+            "number_of_videos": 1,
+            "duration_seconds": 8 if refs else settings.veo_duration_seconds,
+            "enhance_prompt": True,
+            "aspect_ratio": "16:9",
+            "output_gcs_uri": settings.video_gcs_uri,
+        }
         if refs:
             config_kwargs["reference_images"] = refs
 
-        operation = studio.client().models.generate_videos(
-            model=settings.veo_model,
-            source=types.GenerateVideosSource(prompt=final_prompt),
-            config=types.GenerateVideosConfig(**config_kwargs),
-        )
+        call_kwargs = {
+            "model": settings.veo_model,
+            "prompt": final_prompt,
+            "config": types.GenerateVideosConfig(**config_kwargs),
+        }
+        if extend_from_uri:
+            call_kwargs["video"] = types.Video(uri=extend_from_uri, mime_type="video/mp4")
+
+        operation = studio.client().models.generate_videos(**call_kwargs)
         deadline = time.time() + 720
         while not operation.done and time.time() < deadline:
             time.sleep(10)
@@ -76,13 +85,15 @@ class VideoService:
         if not generated:
             raise RuntimeError("Veo completed without a generated video")
         uri = generated[0].video.uri
+        duration = 8 if refs else settings.veo_duration_seconds
         return {
             "status": "DONE",
             "videoUri": uri,
             "playbackUrl": f"/api/media/video/content?uri={quote(uri, safe='')}",
             "model": settings.veo_model,
-            "durationSeconds": settings.veo_duration_seconds,
+            "durationSeconds": duration,
             "referenceCount": len(refs),
+            "continuedFromPreviousShot": bool(extend_from_uri),
         }
 
     def generate(self, title: dict, locale: str = "en-US") -> dict:
