@@ -45,6 +45,9 @@ export const CreateStudioModal: React.FC<CreateStudioModalProps> = ({ isOpen, on
   const selectedUniverseLabel = useMemo(() => universes.find((u) => u.id === selectedUniverse)?.name, [universes, selectedUniverse]);
   if (!isOpen) return null;
 
+  const StageIcon = PIPELINE[stage]?.icon ?? Clapperboard;
+  const stageLabel = PIPELINE[stage]?.label ?? 'Producing cinematic episode';
+
   const start = async (autonomous = false) => {
     setIsGenerating(true);
     setStage(0);
@@ -111,7 +114,7 @@ export const CreateStudioModal: React.FC<CreateStudioModalProps> = ({ isOpen, on
         </> : <div className="py-10 text-center space-y-6">
           <div className="w-16 h-16 mx-auto rounded-2xl bg-gradient-to-tr from-purple-600 to-pink-600 flex items-center justify-center animate-pulse"><Clapperboard className="w-8 h-8"/></div>
           <div><h3 className="text-2xl font-black">PRODUCING, NOT MOCKING</h3><p className="text-xs text-purple-300 mt-1">CINEMIND will return only when the pilot is ready to play. Veo rendering may take several minutes.</p></div>
-          <div className="max-w-md mx-auto rounded-xl bg-white/5 border border-white/10 p-4 flex items-center gap-3 text-left"><PIPELINE[stage].icon className="w-5 h-5 text-purple-300 animate-pulse"/><div><p className="text-xs uppercase text-gray-500">Production activity</p><p className="text-sm font-semibold">{PIPELINE[stage].label}</p></div></div>
+          <div className="max-w-md mx-auto rounded-xl bg-white/5 border border-white/10 p-4 flex items-center gap-3 text-left"><StageIcon className="w-5 h-5 text-purple-300 animate-pulse"/><div><p className="text-xs uppercase text-gray-500">Production activity</p><p className="text-sm font-semibold">{stageLabel}</p></div></div>
           <p className="text-[10px] text-gray-500">The activity label rotates while the single backend production job runs; it does not claim exact per-stage telemetry.</p>
         </div>}
       </div>
