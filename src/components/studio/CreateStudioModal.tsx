@@ -66,7 +66,9 @@ export const CreateStudioModal: React.FC<CreateStudioModalProps> = ({ isOpen, on
         universeId: selectedUniverse,
         locale: getPreferredLocale(),
         autoProducePilot: true,
-        pilotSeconds: 48,
+        // Local validation cut: three 8-second Veo shots. Once continuity and
+        // story quality pass, production can scale without changing the model.
+        pilotSeconds: 24,
         profile: currentProfile,
       });
       window.clearInterval(ticker);
@@ -95,7 +97,7 @@ export const CreateStudioModal: React.FC<CreateStudioModalProps> = ({ isOpen, on
 
         {!isGenerating ? <>
           <div className="rounded-xl bg-gradient-to-r from-purple-950/60 via-pink-950/30 to-black border border-purple-500/30 p-4 flex flex-col sm:flex-row gap-4 justify-between">
-            <div><span className="text-[10px] uppercase tracking-wider text-purple-300">Autonomous Showrunner</span><h4 className="font-bold mt-1">Create a complete original production from my taste</h4><p className="text-xs text-gray-400 mt-1">Includes a ready-to-play 48-second pilot cut with continuity references.</p></div>
+            <div><span className="text-[10px] uppercase tracking-wider text-purple-300">Autonomous Showrunner</span><h4 className="font-bold mt-1">Create a complete original production from my taste</h4><p className="text-xs text-gray-400 mt-1">Validation mode produces a ready-to-play 24-second pilot cut with continuity references.</p></div>
             <button onClick={() => start(true)} className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-purple-600 to-pink-600 font-bold text-sm">Auto Produce</button>
           </div>
 
@@ -113,7 +115,7 @@ export const CreateStudioModal: React.FC<CreateStudioModalProps> = ({ isOpen, on
           <div className="flex justify-end"><button onClick={()=>start(false)} disabled={!prompt.trim()} className="px-8 py-3 rounded-xl bg-gradient-to-r from-purple-600 to-pink-600 font-bold disabled:opacity-40"><span className="flex items-center gap-2"><Sparkles className="w-4 h-4"/>Generate & Produce</span></button></div>
         </> : <div className="py-10 text-center space-y-6">
           <div className="w-16 h-16 mx-auto rounded-2xl bg-gradient-to-tr from-purple-600 to-pink-600 flex items-center justify-center animate-pulse"><Clapperboard className="w-8 h-8"/></div>
-          <div><h3 className="text-2xl font-black">PRODUCING, NOT MOCKING</h3><p className="text-xs text-purple-300 mt-1">CINEMIND will return only when the pilot is ready to play. Veo rendering may take several minutes.</p></div>
+          <div><h3 className="text-2xl font-black">PRODUCING, NOT MOCKING</h3><p className="text-xs text-purple-300 mt-1">Validation mode renders three Veo shots plus localized voice tracks. It should complete much faster than the previous 48-second test.</p></div>
           <div className="max-w-md mx-auto rounded-xl bg-white/5 border border-white/10 p-4 flex items-center gap-3 text-left"><StageIcon className="w-5 h-5 text-purple-300 animate-pulse"/><div><p className="text-xs uppercase text-gray-500">Production activity</p><p className="text-sm font-semibold">{stageLabel}</p></div></div>
           <p className="text-[10px] text-gray-500">The activity label rotates while the single backend production job runs; it does not claim exact per-stage telemetry.</p>
         </div>}
