@@ -79,17 +79,63 @@ QUALITY CONTRACT:
 - backdropPrompt/posterPrompt must describe original cinematic art with no real actor likeness, text, logos or copyrighted visual properties.
 - teaserPrompt must describe a concrete story moment, not an abstract montage.
 """.strip()
-        response = self.client().models.generate_content(
-            model=settings.text_model,
-            contents=schema_prompt,
-            config=types.GenerateContentConfig(
+
+        errors: list[str] = []
+        attempts = [
+            types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=StudioBlueprint,
-                temperature=0.55,
+                temperature=0.45,
             ),
-        )
-        blueprint = response.parsed if isinstance(response.parsed, StudioBlueprint) else StudioBlueprint.model_validate_json(response.text)
-        return blueprint, room_memo
+            types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=StudioBlueprint,
+                temperature=0.20,
+            ),
+        ]
+        for index, config in enumerate(attempts, start=1):
+            try:
+                response = self.client().models.generate_content(
+                    model=settings.text_model,
+                    contents=schema_prompt,
+                    config=config,
+                )
+                if isinstance(response.parsed, StudioBlueprint):
+                    return response.parsed, room_memo
+                text = (response.text or "").strip()
+                if not text:
+                    raise RuntimeError("Gemini returned an empty structured response")
+                return StudioBlueprint.model_validate_json(text), room_memo
+            except Exception as exc:
+                message = f"attempt {index}: {exc.__class__.__name__}: {exc}"
+                errors.append(message)
+                log.warning("Structured blueprint generation %s", message)
+
+        # Last-resort JSON mode. This avoids a hard failure if the SDK/model rejects
+        # the Pydantic response schema while still validating the result ourselves.
+        fallback_prompt = schema_prompt + """
+
+Return ONLY one valid JSON object with these exact top-level keys:
+universeName, universePremise, title, tagline, synopsis, rating, genres, tones,
+canonStatus, characters, episodes, whyCreated, canonFacts, backdropPrompt,
+posterPrompt, teaserPrompt. Do not use markdown fences.
+"""
+        try:
+            response = self.client().models.generate_content(
+                model=settings.text_model,
+                contents=fallback_prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    temperature=0.15,
+                ),
+            )
+            text = (response.text or "").strip()
+            if not text:
+                raise RuntimeError("Gemini returned an empty JSON fallback response")
+            return StudioBlueprint.model_validate_json(text), room_memo
+        except Exception as exc:
+            errors.append(f"fallback: {exc.__class__.__name__}: {exc}")
+            raise RuntimeError("Blueprint generation failed after retries. " + " | ".join(errors)) from exc
 
     def generate_image_data_url(self, prompt: str, aspect_ratio: str) -> str:
         if not settings.enable_images:
