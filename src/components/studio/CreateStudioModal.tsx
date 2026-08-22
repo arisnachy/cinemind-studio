@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { X, Sparkles, Wand2, CheckCircle2, Film, Tv, ShieldCheck, Database, Compass, AlertTriangle } from 'lucide-react';
 import { Title, Universe, TasteProfile } from '../../types/content';
 import { studioApi } from '../../services/api';
+import { getPreferredLocale } from '../../utils/locale';
 
 interface CreateStudioModalProps {
   isOpen: boolean;
@@ -71,6 +72,7 @@ export const CreateStudioModal: React.FC<CreateStudioModalProps> = ({
         format,
         intensity,
         universeId: selectedUniverse,
+        locale: getPreferredLocale(),
         profile: currentProfile,
       });
       window.clearInterval(ticker);
@@ -158,6 +160,10 @@ export const CreateStudioModal: React.FC<CreateStudioModalProps> = ({
                 <div className="flex items-center justify-between text-xs text-gray-400"><span>Narrative Complexity</span><span className="text-purple-400 font-bold">{intensity}%</span></div>
                 <input type="range" min="50" max="100" value={intensity} onChange={(e) => setIntensity(Number(e.target.value))} className="w-full accent-purple-500 cursor-pointer" />
               </div>
+            </div>
+
+            <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-[11px] text-gray-300">
+              Output language: <span className="font-semibold text-purple-300">{getPreferredLocale()}</span>. Change it from the language control in the top navigation.
             </div>
 
             <div className="pt-2 flex justify-end">
