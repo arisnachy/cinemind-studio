@@ -16,7 +16,7 @@ from .schemas import CanonAnalyzeRequest, CanonResolveRequest, EpisodeRenderRequ
 from .video_service import videos
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
-app = FastAPI(title="CINEMIND Studio", version="0.3.0")
+app = FastAPI(title="CINEMIND Studio", version="0.4.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
 
 @app.on_event("startup")
@@ -48,6 +48,8 @@ def health():
         "ttsVoice": settings.tts_voice,
         "episodeRenderMaxSeconds": 96,
         "localeAwareGeneration": True,
+        "continuityReferences": True,
+        "oneClickProduction": True,
     }
 
 @app.post("/api/studio/generate")
@@ -57,7 +59,40 @@ async def generate(req: GenerateTitleRequest):
     try:
         blueprint, _ = await studio.generate_blueprint(req)
         title = studio.to_title(req, blueprint)
+        title["productionStatus"] = "WRITING"
         memory.persist_generation(viewer_id=req.profile.id, title=title, canon_facts=blueprint.canonFacts)
+
+        if req.autoProducePilot and settings.enable_video:
+            title["productionStatus"] = "RENDERING"
+            first_episode = (title.get("episodes") or [{}])[0]
+            try:
+                rendered = render_episode(EpisodeRenderRequest(
+                    title=title,
+                    episodeId=first_episode.get("id"),
+                    locale=req.locale,
+                    targetSeconds=req.pilotSeconds,
+                    includeNarration=True,
+                ))
+                segments = rendered.get("segments", [])
+                title["productionStatus"] = "READY"
+                title["productionSegments"] = segments
+                title["productionSummary"] = rendered.get("summary", "")
+                title["productionLogline"] = rendered.get("logline", "")
+                title["productionContinuityLock"] = rendered.get("continuityLock", {})
+                title["hasGeneratedVideo"] = bool(segments)
+                if segments:
+                    title["videoPreviewUrl"] = segments[0].get("playbackUrl", "")
+                if first_episode:
+                    first_episode["status"] = "Ready"
+                    first_episode["renderedSeconds"] = rendered.get("totalDurationSeconds", 0)
+                    first_episode["renderedSegments"] = len(segments)
+            except Exception as production_exc:
+                logging.exception("Automatic pilot production failed")
+                title["productionStatus"] = "FAILED"
+                title["productionError"] = str(production_exc)
+                if first_episode:
+                    first_episode["status"] = "Scene generation"
+
         return title
     except Exception as exc:
         logging.exception("Generation failed")
@@ -125,10 +160,11 @@ def video_content(uri: str, request: Request):
     if total <= 0:
         raise HTTPException(404, "Generated media is empty")
 
+    content_type = blob.content_type or "application/octet-stream"
     common_headers = {
         "Accept-Ranges": "bytes",
         "Cache-Control": "private, max-age=3600",
-        "Content-Type": blob.content_type or "application/octet-stream",
+        "Content-Type": content_type,
     }
     range_header = request.headers.get("range")
 
@@ -137,7 +173,7 @@ def video_content(uri: str, request: Request):
 
     if not range_header:
         data = blob.download_as_bytes()
-        return Response(content=data, status_code=200, media_type=blob.content_type or "application/octet-stream", headers={**common_headers, "Content-Length": str(total)})
+        return Response(content=data, status_code=200, media_type=content_type, headers={**common_headers, "Content-Length": str(total)})
 
     try:
         unit, spec = range_header.split("=", 1)
@@ -166,7 +202,7 @@ def video_content(uri: str, request: Request):
         "Content-Range": f"bytes {start}-{end}/{total}",
         "Content-Length": str(length),
     }
-    return Response(content=data, status_code=206, media_type=blob.content_type or "application/octet-stream", headers=headers)
+    return Response(content=data, status_code=206, media_type=content_type, headers=headers)
 
 DIST = Path(os.getenv("CINEMIND_DIST", "/app/dist"))
 if DIST.exists():
