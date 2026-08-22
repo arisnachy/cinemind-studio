@@ -1,6 +1,10 @@
 from __future__ import annotations
+
 import math
+
 from google.genai import types
+
+from .compositor_service import composer
 from .config import settings
 from .gemini_service import studio
 from .reference_service import references
@@ -65,14 +69,13 @@ CONTINUITY CONTRACT:
 - Keep ONE primary sceneId/location for at least the first half of the cut. A new sceneId is allowed only for an explicitly motivated location/time transition.
 - Use at most two speaking characters in this short cut.
 - visualPromptEnglish must be English and describe cinematography + subject + action + context + style.
-- narration/dialogue/subtitle must be natural {req.locale}.
+- narration/dialogue/subtitle must be natural {req.locale}. Never switch to English unless the viewer locale is English.
 - Never put narration and character dialogue in the same short shot. Choose one or the other.
 - Every continuityAnchor must repeat immutable identity details: face/hair/age/wardrobe/signature prop + set/lighting/time-of-day.
 - Dialogue must be short, specific, motivated and speakable within the shot.
 - No generic mysterious whispers, random breathing, abstract glitches, unexplained creatures, unrelated symbols or cinematic filler.
 - No new character, prop or location may appear unless the prior beat establishes why it enters.
 - The final shot must make sense even to a viewer who saw only the preceding shots.
-- Every shot is rendered as its own 8-second Veo reference-image clip. Therefore each visual prompt MUST re-state the exact state inherited from the previous shot: where each character is standing, what they are holding, their emotional state, the last visible action, and what changes in this shot.
 """.strip()
 
     response = studio.client().models.generate_content(
@@ -81,7 +84,7 @@ CONTINUITY CONTRACT:
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
             response_schema=EpisodeRenderPlan,
-            temperature=0.25,
+            temperature=0.20,
         ),
     )
     plan = response.parsed if isinstance(response.parsed, EpisodeRenderPlan) else EpisodeRenderPlan.model_validate_json(response.text)
@@ -92,16 +95,12 @@ CONTINUITY CONTRACT:
 def render_episode(req: EpisodeRenderRequest) -> dict:
     plan = build_plan(req)
     reference_uris = references.build_for_title(req.title)
-    rendered = []
+    rendered: list[dict] = []
+    previous_scene_id = ""
+    previous_last_frame_uri = ""
 
-    # IMPORTANT: do not chain Veo video-extension calls here. Veo extensions are
-    # capped at 30 seconds total. Re-extending an 8s clip grows roughly
-    # 8 -> 15 -> 22 -> 29 -> 36 and fails on the fifth continuation. CINEMIND
-    # instead renders each shot as an independent 8s clip using the SAME locked
-    # visual references. This allows arbitrarily long episodes while keeping
-    # per-shot TTS/subtitles aligned. First/last-frame continuity can be added
-    # later without reintroducing the 30-second extension ceiling.
     for index, shot in enumerate(plan.shots, start=1):
+        same_scene_handoff = bool(previous_last_frame_uri and previous_scene_id and shot.sceneId == previous_scene_id)
         shot_prompt = f"""
 SCENE {shot.sceneId} — STORY BEAT: {shot.storyBeat}
 PURPOSE: {shot.scenePurpose}
@@ -112,20 +111,22 @@ CONTINUITY LOCK: {shot.continuityAnchor}
 ACTION AND CINEMATOGRAPHY: {shot.visualPromptEnglish}
 
 Stage exactly this story beat. It must visibly follow the prior dramatic action; do not create a montage or generic establishing clip.
-The supplied reference assets are IMMUTABLE identity/production anchors. Match them closely. Preserve faces, age, hair, wardrobe, signature props, set architecture, lighting direction and color language. Do not redesign characters between shots.
+If a first frame is supplied, continue its exact action immediately instead of resetting poses or geography.
 """.strip()
 
         result = videos.generate_prompt(
             shot_prompt,
             locale=req.locale,
-            narration="",
-            dialogue="",
-            reference_uris=reference_uris,
-            extend_from_uri="",
+            reference_uris=reference_uris if not same_scene_handoff else [],
+            first_frame_uri=previous_last_frame_uri if same_scene_handoff else "",
         )
 
-        # One clean spoken source per short shot. Character voices are stable across
-        # the whole series; narration uses the configured narrator voice.
+        # Exact visual handoff without Veo video-extension: the final frame of one
+        # shot becomes the first frame of the next shot in the same scene.
+        last_frame_uri = composer.extract_last_frame(result["videoUri"])
+
+        # One clean spoken source per short shot. Character voices remain stable;
+        # Veo itself is explicitly instructed to generate no speech.
         voice_text = ""
         voice_name = settings.tts_voice
         voice_role = "narrator"
@@ -158,13 +159,21 @@ The supplied reference assets are IMMUTABLE identity/production anchors. Match t
             "dialogue": shot.dialogue,
             "dialogueSpeaker": shot.dialogueSpeaker,
             "narrationUrl": voice.get("playbackUrl") if voice else "",
+            "narrationUri": voice.get("audioUri") if voice else "",
             "narrationModel": voice.get("model") if voice else "",
             "narrationVoice": voice.get("voice") if voice else "",
             "voiceRole": voice_role if voice else "",
             "continuityAnchor": shot.continuityAnchor,
             "referenceCount": result.get("referenceCount", 0),
-            "continuedFromPreviousShot": False,
+            "firstFrameApplied": result.get("firstFrameApplied", False),
+            "lastFrameUri": last_frame_uri,
         })
+        previous_scene_id = shot.sceneId
+        previous_last_frame_uri = last_frame_uri
+
+    # READY means a viewer-ready master exists. The player must not expose the
+    # implementation detail that Veo generated short clips underneath.
+    master = composer.compose(rendered, req.locale)
 
     return {
         "status": "READY",
@@ -176,14 +185,17 @@ The supplied reference assets are IMMUTABLE identity/production anchors. Match t
         "climax": plan.climax,
         "cliffhanger": plan.cliffhanger,
         "summary": plan.summary,
-        "totalDurationSeconds": sum(x["durationSeconds"] for x in rendered),
+        "totalDurationSeconds": master["durationSeconds"],
         "segments": rendered,
+        "finalPlaybackUrl": master["playbackUrl"],
+        "finalVideoUri": master["videoUri"],
+        "composition": master["composition"],
         "model": settings.veo_model,
         "ttsModel": settings.tts_model if settings.enable_tts else "",
         "continuityLock": {
             "enabled": bool(reference_uris),
             "referenceImages": len(reference_uris),
-            "sameSceneVideoExtension": False,
-            "strategy": "locked-reference-per-shot",
+            "sameSceneFirstFrameHandoff": True,
+            "singleMasterPlayback": True,
         },
     }
