@@ -40,7 +40,7 @@ Existing universe id: {req.universeId or 'new universe'}
 Viewer locale: {req.locale}
 Director brief: {req.prompt or 'Autonomously invent the strongest original concept for this viewer.'}
 
-Use ClickHouse narrative memory when available. Develop an original concept and have the specialist agents challenge it for character depth and continuity.
+Use ClickHouse narrative memory when available. Develop an original concept and have the specialist agents challenge it for character depth, causal plotting, continuity and producibility.
 """.strip()
         room_memo = ""
         try:
@@ -49,8 +49,8 @@ Use ClickHouse narrative memory when available. Develop an original concept and 
             log.warning("ADK creative room unavailable; continuing with Gemini structured generation: %s", exc)
 
         schema_prompt = f"""
-You are the final publishing editor for CINEMIND Studio, an AI-native streaming service.
-Create an entirely original {req.format} from the brief below. Do not reference or imitate existing franchises, performers, studios, trademarks, or copyrighted characters.
+You are the final publishing editor and head writer for CINEMIND Studio, an AI-native premium streaming service.
+Create an entirely original {req.format}. Do not reference or imitate existing franchises, performers, studios, trademarks, or copyrighted characters.
 
 DIRECTOR REQUEST:
 {room_prompt}
@@ -58,19 +58,26 @@ DIRECTOR REQUEST:
 MULTI-AGENT CREATIVE ROOM MEMO:
 {room_memo or 'No memo was available; create the concept directly while preserving originality.'}
 
-LANGUAGE REQUIREMENT:
-- All user-facing creative text (title, tagline, synopsis, character roles/motivations, episode titles/synopses, director notes, whyCreated, and canonFacts) MUST be written naturally for locale {req.locale}.
-- Keep backdropPrompt, posterPrompt and teaserPrompt in ENGLISH because Google visual/video generation models are directed internally in English.
-- Proper nouns may remain original unless localization improves readability.
+LANGUAGE:
+- All user-facing creative text MUST be natural for locale {req.locale}.
+- backdropPrompt, posterPrompt and teaserPrompt MUST remain in English for Google visual/video generation.
 
-Requirements:
-- Make the title memorable and commercially plausible.
-- Characters must have distinct motivations and explicit knowledge state for continuity.
-- If series: produce 4-6 episode outlines. If movie: produce 3 chapter-like segments as episodes for the interactive player.
+QUALITY CONTRACT:
+- Choose ONE unmistakable protagonist with a concrete external objective and internal pressure.
+- The core premise must be explainable in one sentence and create repeatable episode conflict.
+- Characters must have distinct motivations, knowledge states and relationships that create dramatic friction.
+- visualDescriptor for every major character must be an IMMUTABLE identity anchor: adult age range, facial structure, skin tone, hair, build, distinctive wardrobe and one signature prop/detail. Avoid vague adjectives.
+- The season must have escalation, not six unrelated premises.
+- Episode 1 MUST work as a real pilot: cold open → protagonist objective → inciting incident → consequential reaction → reveal → cliffhanger. Every beat must be causally connected.
+- Episode synopses should describe actions and consequences, not mood, symbolism or trailer language.
+- directorNotes for Episode 1 must state the primary location, protagonist wardrobe, lighting/time of day, key prop, and the exact dramatic reveal that the playable pilot cut should stage.
+- Prefer 2-4 recurring primary locations and a manageable cast so video continuity is achievable.
+- Do not use dream imagery, random glitches, mysterious silhouettes, abstract cosmic imagery or unexplained creatures unless the premise explicitly requires them.
+- If series: produce 4-6 episode outlines. If movie: produce 3 causally connected chapter segments.
 - canonFacts must be atomic facts that can be stored and queried later.
-- whyCreated must explain audience-fit without pretending to know signals not supplied above.
-- backdropPrompt and posterPrompt must describe original cinematic art with no real actor likenesses, text, logos or copyrighted visual properties.
-- teaserPrompt must be suitable for a short Veo cinematic clip and MUST remain in English.
+- whyCreated must use only supplied taste signals.
+- backdropPrompt/posterPrompt must describe original cinematic art with no real actor likeness, text, logos or copyrighted visual properties.
+- teaserPrompt must describe a concrete story moment, not an abstract montage.
 """.strip()
         response = self.client().models.generate_content(
             model=settings.text_model,
@@ -78,7 +85,7 @@ Requirements:
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=StudioBlueprint,
-                temperature=0.9,
+                temperature=0.55,
             ),
         )
         blueprint = response.parsed if isinstance(response.parsed, StudioBlueprint) else StudioBlueprint.model_validate_json(response.text)
@@ -100,10 +107,7 @@ Requirements:
                 if part.inline_data and part.inline_data.data:
                     mime = part.inline_data.mime_type or "image/png"
                     raw = part.inline_data.data
-                    if isinstance(raw, bytes):
-                        encoded = base64.b64encode(raw).decode("ascii")
-                    else:
-                        encoded = str(raw)
+                    encoded = base64.b64encode(raw).decode("ascii") if isinstance(raw, bytes) else str(raw)
                     return f"data:{mime};base64,{encoded}"
         except Exception as exc:
             log.warning("Gemini image generation failed: %s", exc)
@@ -126,7 +130,7 @@ Requirements:
             episodes.append({
                 "id": f"ep-{uuid.uuid4().hex[:10]}", "titleId": generated_id, "seasonNumber": 1,
                 "episodeNumber": index, "title": ep.title, "synopsis": ep.synopsis,
-                "durationMinutes": ep.durationMinutes, "thumbnailUrl": backdrop, "status": "Ready" if index == 1 else "Writing",
+                "durationMinutes": ep.durationMinutes, "thumbnailUrl": backdrop, "status": "Writing",
                 "watchedPercentage": 0, "releaseDate": "Generated now", "directorNotes": ep.directorNotes,
             })
         return {
@@ -144,7 +148,7 @@ Requirements:
             "matchScore": min(99, 88 + round(req.intensity / 10)),
             "genres": list(dict.fromkeys([req.genre, *bp.genres]))[:4],
             "tones": list(dict.fromkeys([req.mood, *bp.tones]))[:4],
-            "badges": ["Gemini Generated", "Canon Memory Ready", "Created For You"],
+            "badges": ["Gemini Generated", "Continuity Lock", "Created For You"],
             "backdropUrl": backdrop,
             "posterUrl": poster or backdrop,
             "logoText": "CINEMIND ORIGINAL",
@@ -157,6 +161,8 @@ Requirements:
             "_cinemind": {
                 "canonFacts": bp.canonFacts,
                 "universePremise": bp.universePremise,
+                "backdropPrompt": bp.backdropPrompt,
+                "posterPrompt": bp.posterPrompt,
                 "teaserPrompt": bp.teaserPrompt,
                 "locale": req.locale,
                 "generatedBy": settings.text_model,
