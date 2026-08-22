@@ -13,10 +13,6 @@ log = logging.getLogger(__name__)
 
 VOICE_POOL = ["Charon", "Puck", "Aoede", "Leda", "Orus", "Kore"]
 
-# google.genai speech_config accepts a narrower locale set than the UI. Keep the
-# user's requested locale for writing/style, but map it to a supported synthesis
-# code. Dominican Spanish is rendered as Latin-American Spanish while the prompt
-# explicitly asks for Dominican pronunciation and cadence.
 SUPPORTED_SPEECH_CODES = {
     "de-DE", "en-AU", "en-GB", "en-IN", "en-US", "es-US", "fr-FR", "hi-IN",
     "pt-BR", "ar-XA", "es-ES", "fr-CA", "id-ID", "it-IT", "ja-JP", "tr-TR",
@@ -78,6 +74,7 @@ class NarrationService:
                 model=settings.tts_model,
                 contents=prompt,
                 config=types.GenerateContentConfig(
+                    response_modalities=["AUDIO"],
                     speech_config=types.SpeechConfig(
                         language_code=synth_locale,
                         voice_config=types.VoiceConfig(
