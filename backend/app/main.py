@@ -16,7 +16,7 @@ from .schemas import CanonAnalyzeRequest, CanonResolveRequest, EpisodeRenderRequ
 from .video_service import videos
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
-app = FastAPI(title="CINEMIND Studio", version="0.4.1")
+app = FastAPI(title="CINEMIND Studio", version="0.5.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
 
 @app.on_event("startup")
@@ -49,6 +49,8 @@ def health():
         "episodeRenderMaxSeconds": 96,
         "localeAwareGeneration": True,
         "continuityReferences": True,
+        "firstFrameHandoff": True,
+        "singleMasterPlayback": True,
         "oneClickProduction": True,
     }
 
@@ -81,15 +83,21 @@ async def generate(req: GenerateTitleRequest):
                     includeNarration=True,
                 ))
                 segments = rendered.get("segments", [])
-                if not segments:
-                    raise RuntimeError("Pilot renderer completed without playable segments")
+                final_url = rendered.get("finalPlaybackUrl", "")
+                final_uri = rendered.get("finalVideoUri", "")
+                if not segments or not final_url or not final_uri:
+                    raise RuntimeError("Pilot renderer did not produce a continuous viewer-ready master")
+
                 title["productionStatus"] = "READY"
                 title["productionSegments"] = segments
+                title["productionPlaybackUrl"] = final_url
+                title["productionVideoUri"] = final_uri
+                title["productionComposition"] = rendered.get("composition", "single-master-mp4")
                 title["productionSummary"] = rendered.get("summary", "")
                 title["productionLogline"] = rendered.get("logline", "")
                 title["productionContinuityLock"] = rendered.get("continuityLock", {})
                 title["hasGeneratedVideo"] = True
-                title["videoPreviewUrl"] = segments[0].get("playbackUrl", "")
+                title["videoPreviewUrl"] = final_url
                 if first_episode:
                     first_episode["status"] = "Ready"
                     first_episode["renderedSeconds"] = rendered.get("totalDurationSeconds", 0)
