@@ -20,6 +20,9 @@ export interface EpisodeRenderSegment {
   subtitle: string;
   narration: string;
   dialogue: string;
+  narrationUrl: string;
+  narrationModel: string;
+  narrationVoice: string;
   continuityAnchor: string;
 }
 
@@ -31,6 +34,7 @@ export interface EpisodeRenderResult {
   totalDurationSeconds: number;
   segments: EpisodeRenderSegment[];
   model: string;
+  ttsModel?: string;
 }
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
