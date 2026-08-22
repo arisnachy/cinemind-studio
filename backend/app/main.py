@@ -40,6 +40,8 @@ def health():
         "clickhouse_cluster": clickhouse_ok,
         "imageGeneration": settings.enable_images,
         "videoGeneration": settings.enable_video,
+        "veoModel": settings.veo_model,
+        "veoDurationSeconds": settings.veo_duration_seconds,
     }
 
 @app.post("/api/studio/generate")
