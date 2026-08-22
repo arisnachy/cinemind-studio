@@ -37,8 +37,8 @@ def build_plan(req: EpisodeRenderRequest) -> EpisodeRenderPlan:
 
     prompt = f"""
 You are the lead television director, script editor and continuity supervisor for CINEMIND.
-Your job is NOT to make a trailer or montage. Build one coherent dramatic mini-episode that plays like the opening sequence of a premium scripted series.
-Create exactly {shot_count} consecutive shots, each approximately {seconds_per_shot} seconds.
+Do NOT make a trailer, montage, dream sequence or collection of disconnected cool images.
+Build one coherent dramatic mini-episode made of exactly {shot_count} consecutive shots.
 
 SERIES: {req.title.get('title')}
 UNIVERSE: {req.title.get('universeName')}
@@ -47,7 +47,6 @@ EPISODE: {episode.get('title')}
 EPISODE SYNOPSIS: {episode.get('synopsis')}
 DIRECTOR NOTES: {episode.get('directorNotes', '')}
 VIEWER LOCALE: {req.locale}
-TOTAL CUT: approximately {shot_count * seconds_per_shot} seconds
 
 CAST BIBLE:
 {cast_summary or '- Maintain the same original fictional adult characters from shot to shot.'}
@@ -55,25 +54,23 @@ CAST BIBLE:
 CANON:
 {chr(10).join('- ' + str(x) for x in canon_facts[:10]) or '- Preserve the established series premise.'}
 
-MANDATORY STORY STRUCTURE:
-1. COLD OPEN: establish protagonist, place and ordinary objective in a readable way.
-2. INCITING INCIDENT: one concrete event disrupts that objective.
-3. ESCALATION: protagonist reacts; cause and effect must connect directly to the previous shot.
-4. REVEAL: reveal one meaningful piece of information tied to the series premise.
-5. CLIFFHANGER/PAYOFF: end on one clear unresolved dramatic question.
+MANDATORY CAUSAL ARC:
+- Shot 1 COLD OPEN: protagonist in a specific place pursuing a concrete immediate objective.
+- Shot 2 INCITING INCIDENT: a visible event disrupts that objective.
+- Middle shots REACTION/ESCALATION: each action must be a consequence of the preceding shot.
+- Penultimate shot REVEAL: concrete information changes the protagonist's understanding.
+- Final shot CLIFFHANGER: a visible consequence directly tied to shot 1 and the reveal.
 
-DIRECTING RULES:
-- This is a scene, not disconnected visual poetry. Every shot must logically follow the previous shot.
-- Use the SAME primary location for most shots unless the story explicitly motivates a move.
-- Use at most 2 speaking characters in this short cut.
-- visualPromptEnglish MUST be English and must describe camera, subject, action, setting, lighting and continuity.
-- narration, dialogue and subtitle MUST be natural {req.locale}; never translate names.
-- Dialogue must be short, specific and dramatically useful. No generic exposition.
-- Repeat stable wardrobe, hair, age, props and location details in continuityAnchor.
-- shotType should progress professionally: establishing/medium/close-up/insert/reaction/etc., not random angles.
-- No real actors, brands, copyrighted characters or franchise imitation.
-- Do not invent unrelated symbols, creatures or locations simply because they look cinematic.
-- The final shot MUST directly answer or escalate something introduced in shot 1.
+CONTINUITY CONTRACT:
+- Keep ONE primary sceneId/location for at least the first half of the cut. A new sceneId is allowed only for an explicitly motivated location/time transition.
+- Use at most two speaking characters in this short cut.
+- visualPromptEnglish must be English and describe cinematography + subject + action + context + style.
+- narration/dialogue/subtitle must be natural {req.locale}.
+- Every continuityAnchor must repeat immutable identity details: face/hair/age/wardrobe/signature prop + set/lighting/time-of-day.
+- Dialogue must be short, specific, motivated and speakable within the shot.
+- No generic mysterious whispers, random breathing, abstract glitches, unexplained creatures, unrelated symbols or cinematic filler.
+- No new character, prop or location may appear unless the prior beat establishes why it enters.
+- The final shot must make sense even to a viewer who saw only the preceding shots.
 """.strip()
 
     response = studio.client().models.generate_content(
@@ -82,12 +79,11 @@ DIRECTING RULES:
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
             response_schema=EpisodeRenderPlan,
-            temperature=0.35,
+            temperature=0.25,
         ),
     )
     plan = response.parsed if isinstance(response.parsed, EpisodeRenderPlan) else EpisodeRenderPlan.model_validate_json(response.text)
-    if len(plan.shots) != shot_count:
-        plan.shots = plan.shots[:shot_count]
+    plan.shots = plan.shots[:shot_count]
     return plan
 
 
@@ -95,8 +91,11 @@ def render_episode(req: EpisodeRenderRequest) -> dict:
     plan = build_plan(req)
     reference_uris = references.build_for_title(req.title)
     rendered = []
+    previous_scene_id = ""
+    previous_video_uri = ""
 
     for index, shot in enumerate(plan.shots, start=1):
+        same_scene_continuation = bool(previous_video_uri and previous_scene_id and shot.sceneId == previous_scene_id)
         shot_prompt = f"""
 SCENE {shot.sceneId} — STORY BEAT: {shot.storyBeat}
 PURPOSE: {shot.scenePurpose}
@@ -106,7 +105,7 @@ SHOT TYPE: {shot.shotType}
 CONTINUITY LOCK: {shot.continuityAnchor}
 ACTION AND CINEMATOGRAPHY: {shot.visualPromptEnglish}
 
-This shot begins exactly where the prior dramatic beat leaves off. Preserve the same production design and character identity shown by the supplied asset references.
+Stage exactly this story beat. It must visibly follow the prior dramatic action; do not create a montage or generic establishing clip.
 """.strip()
 
         result = videos.generate_prompt(
@@ -114,11 +113,10 @@ This shot begins exactly where the prior dramatic beat leaves off. Preserve the 
             locale=req.locale,
             narration="",
             dialogue="",
-            reference_uris=reference_uris,
+            reference_uris=reference_uris if not same_scene_continuation else [],
+            extend_from_uri=previous_video_uri if same_scene_continuation else "",
         )
 
-        # Reliable spoken track is generated separately. We prefer exact scripted
-        # speech to uncontrolled model vocalizations in the picture generation.
         voice_parts = []
         if req.includeNarration and shot.narration:
             voice_parts.append(shot.narration)
@@ -148,7 +146,10 @@ This shot begins exactly where the prior dramatic beat leaves off. Preserve the 
             "narrationVoice": voice.get("voice") if voice else "",
             "continuityAnchor": shot.continuityAnchor,
             "referenceCount": result.get("referenceCount", 0),
+            "continuedFromPreviousShot": result.get("continuedFromPreviousShot", False),
         })
+        previous_scene_id = shot.sceneId
+        previous_video_uri = result["videoUri"]
 
     return {
         "status": "READY",
@@ -167,5 +168,6 @@ This shot begins exactly where the prior dramatic beat leaves off. Preserve the 
         "continuityLock": {
             "enabled": bool(reference_uris),
             "referenceImages": len(reference_uris),
+            "sameSceneVideoExtension": True,
         },
     }
