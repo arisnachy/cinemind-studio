@@ -27,6 +27,8 @@ class GenerateTitleRequest(BaseModel):
     intensity: int = Field(default=85, ge=50, le=100)
     universeId: str | None = None
     locale: str = "en-US"
+    autoProducePilot: bool = True
+    pilotSeconds: int = Field(default=48, ge=24, le=96)
     profile: TasteProfile
 
 class CharacterBlueprint(BaseModel):
@@ -84,15 +86,27 @@ class VideoRequest(BaseModel):
 
 class EpisodeShotBlueprint(BaseModel):
     shotNumber: int
+    sceneId: str
+    storyBeat: str
+    scenePurpose: str
+    location: str
+    characters: list[str] = []
+    shotType: str
     visualPromptEnglish: str
     narration: str = ""
     dialogue: str = ""
+    dialogueSpeaker: str = ""
     subtitle: str = ""
-    continuityAnchor: str = ""
+    continuityAnchor: str
 
 class EpisodeRenderPlan(BaseModel):
     episodeTitle: str
     locale: str
+    logline: str
+    coldOpen: str
+    escalation: str
+    climax: str
+    cliffhanger: str
     summary: str
     shots: list[EpisodeShotBlueprint]
 
@@ -100,5 +114,5 @@ class EpisodeRenderRequest(BaseModel):
     title: dict
     episodeId: str | None = None
     locale: str = "en-US"
-    targetSeconds: int = Field(default=32, ge=8, le=96)
+    targetSeconds: int = Field(default=48, ge=24, le=96)
     includeNarration: bool = True
