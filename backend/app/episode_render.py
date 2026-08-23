@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import math
+import re
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from difflib import SequenceMatcher
 from typing import Callable
 
 from google.genai import types
@@ -16,6 +19,11 @@ from .storyboard_service import storyboard_frames
 from .video_service import videos
 
 ProgressCallback = Callable[[str, int, int, str], None]
+
+_HONORIFICS = {
+    "dr", "dra", "doctor", "doctora", "prof", "profesor", "profesora",
+    "mr", "mrs", "ms", "miss", "sr", "sra", "senor", "senora",
+}
 
 
 def _noop_progress(stage: str, completed: int, total: int, message: str) -> None:
@@ -34,6 +42,113 @@ def _episode_from_request(req: EpisodeRenderRequest) -> dict:
         "synopsis": req.title.get("synopsis", ""),
         "directorNotes": "",
     }
+
+
+def _normalize_person_name(value: str) -> str:
+    """Normalize a cast label without changing the canonical display name.
+
+    Gemini sometimes adds an honorific (for example `Dra.`) even when the cast
+    bible stores `Vespera Thorne`. Matching is accent/case/punctuation insensitive
+    and ignores common titles, but never invents a new cast member.
+    """
+    text = unicodedata.normalize("NFKD", value or "")
+    text = "".join(ch for ch in text if not unicodedata.combining(ch)).lower()
+    tokens = re.findall(r"[a-z0-9]+", text)
+    tokens = [token for token in tokens if token not in _HONORIFICS]
+    return " ".join(tokens)
+
+
+def _resolve_cast_name(raw: str, canonical_names: list[str], shot_characters: list[str]) -> str:
+    raw = (raw or "").strip()
+    if not raw:
+        return ""
+    if raw in canonical_names:
+        return raw
+
+    normalized_raw = _normalize_person_name(raw)
+    normalized_cast = {name: _normalize_person_name(name) for name in canonical_names}
+
+    exact = [name for name, norm in normalized_cast.items() if norm and norm == normalized_raw]
+    if len(exact) == 1:
+        return exact[0]
+
+    # Safe containment handles labels such as "Dr. Maya Torres, MD" while still
+    # requiring a substantial canonical name rather than a single token.
+    contained = [
+        name for name, norm in normalized_cast.items()
+        if len(norm) >= 5 and normalized_raw and (norm in normalized_raw or normalized_raw in norm)
+    ]
+    if len(contained) == 1:
+        return contained[0]
+
+    # Prefer the cast members explicitly present in this shot when Gemini supplied
+    # a slightly different spelling. This keeps fuzzy matching tightly scoped.
+    present: list[str] = []
+    for label in shot_characters or []:
+        normalized_label = _normalize_person_name(label)
+        for name, norm in normalized_cast.items():
+            if norm and normalized_label and (
+                norm == normalized_label or norm in normalized_label or normalized_label in norm
+            ):
+                if name not in present:
+                    present.append(name)
+
+    candidates = present or canonical_names
+    scored = [
+        (SequenceMatcher(None, normalized_raw, normalized_cast[name]).ratio(), name)
+        for name in candidates
+        if normalized_cast[name]
+    ]
+    scored.sort(reverse=True)
+    if scored and scored[0][0] >= 0.84:
+        # Avoid ambiguous fuzzy correction when two names are nearly tied.
+        if len(scored) == 1 or scored[0][0] - scored[1][0] >= 0.08:
+            return scored[0][1]
+
+    # If the shot contains exactly one known cast member, that is the only safe
+    # speaker for a single-line shot and is preferable to wasting a Veo render.
+    if len(present) == 1:
+        return present[0]
+    return ""
+
+
+def _preflight_cast_contract(plan: EpisodeRenderPlan, title: dict) -> int:
+    """Canonicalize speaker labels before any Reality Pack/Image/Veo spending.
+
+    Returns the number of corrected speaker labels. Truly unresolved/ambiguous
+    speakers fail closed here, while production is still free of media spend.
+    """
+    cast = title.get("cast", []) or []
+    canonical_names = [str(c.get("name", "")).strip() for c in cast if c.get("name")]
+    corrections = 0
+
+    for index, shot in enumerate(plan.shots, start=1):
+        # Canonicalize recognizable names in the visible-character list as well.
+        canonical_visible: list[str] = []
+        for label in shot.characters or []:
+            resolved_visible = _resolve_cast_name(label, canonical_names, shot.characters)
+            value = resolved_visible or label
+            if value not in canonical_visible:
+                canonical_visible.append(value)
+        shot.characters = canonical_visible
+
+        if not shot.dialogue.strip():
+            shot.dialogueSpeaker = ""
+            continue
+
+        raw_speaker = shot.dialogueSpeaker.strip()
+        resolved = _resolve_cast_name(raw_speaker, canonical_names, shot.characters)
+        if not resolved:
+            raise RuntimeError(
+                "PLAN_PREFLIGHT_FAILED: "
+                f"shot {index} uses dialogue speaker {raw_speaker!r}, which cannot be mapped unambiguously "
+                f"to the locked cast {canonical_names}. No Reality Pack, storyboard, or Veo credits were spent."
+            )
+        if raw_speaker != resolved:
+            corrections += 1
+        shot.dialogueSpeaker = resolved
+
+    return corrections
 
 
 def _story_structure(shot_count: int) -> str:
@@ -117,7 +232,8 @@ MANDATORY QUALITY RULES:
 - endFramePromptEnglish describes the EXACT visible final frame after the action. For adjacent shots, the prior end frame and next start frame must be compatible enough to be represented by ONE shared image.
 - Naturalistic live-action realism: real skin texture, practical lighting, plausible materials, restrained lensing and camera movement.
 - narration/dialogue/subtitle must be natural for locale {req.locale}; never switch to English unless the locale is English.
-- At most one short spoken line per 8-second shot. dialogueSpeaker must exactly match a cast name.
+- At most one short spoken line per 8-second shot.
+- dialogueSpeaker MUST be copied character-for-character from the CAST BIBLE name. Never add titles such as Dr., Dra., Prof., rank, surname-only labels, or aliases.
 - Every continuityAnchor repeats immutable identity and current physical state: face, hair, age, wardrobe, props, body position, set geography, lighting, time.
 - Final beat must be intentional, not an arbitrary cutoff.
 """.strip()
@@ -142,14 +258,23 @@ def render_episode(req: EpisodeRenderRequest, progress: ProgressCallback | None 
     progress = progress or _noop_progress
     progress("planning", 0, 1, "Writing complete episode and shot grammar")
     plan = build_plan(req)
-    progress("planning", 1, 1, f"Locked {len(plan.shots)}-shot narrative plan")
+
+    # Critical zero-cost gate: validate every speaker and visible cast label before
+    # creating Reality Pack images, storyboard frames, or any Veo operation.
+    corrections = _preflight_cast_contract(plan, req.title)
+    preflight_note = f"; canonicalized {corrections} speaker label(s)" if corrections else ""
+    progress("planning", 1, 1, f"Locked {len(plan.shots)}-shot narrative plan; cast preflight passed{preflight_note}")
 
     progress("reality_pack", 0, 1, "Creating photoreal cast and location anchors")
     reference_uris = references.build_for_title(req.title)
     progress("reality_pack", 1, 1, f"Locked {len(reference_uris)} Reality Pack references")
 
     progress("storyboard", 0, len(plan.shots) + 1, "Generating shared start/end keyframes")
-    boundary_frames = storyboard_frames.build_shared_boundaries(plan, reference_uris)
+    boundary_frames = storyboard_frames.build_shared_boundaries(
+        plan,
+        reference_uris,
+        on_progress=lambda completed, total, message: progress("storyboard", completed, total, message),
+    )
     progress("storyboard", len(boundary_frames), len(boundary_frames), "Storyboard boundaries locked")
 
     cast = req.title.get("cast", []) or []
@@ -165,8 +290,15 @@ def render_episode(req: EpisodeRenderRequest, progress: ProgressCallback | None 
         narration_text = shot.narration.strip() if req.includeNarration and not dialogue else ""
         speaker = shot.dialogueSpeaker.strip() if dialogue else ""
         voice_descriptor = voice_by_name.get(speaker, "") if speaker else ""
+
+        # This should already be guaranteed by preflight, but keep a last defensive
+        # resolution so a mutable plan can never crash late on a harmless honorific.
         if dialogue and speaker and speaker not in voice_by_name:
-            raise RuntimeError(f"Shot {index + 1} dialogue speaker {speaker!r} is not in the locked cast bible")
+            speaker = _resolve_cast_name(speaker, list(voice_by_name), shot.characters)
+            if not speaker:
+                raise RuntimeError(f"Late cast-contract violation in shot {index + 1}")
+            shot.dialogueSpeaker = speaker
+            voice_descriptor = voice_by_name.get(speaker, "")
 
         repair = f"\nSUPERVISING-DIRECTOR REPAIR NOTE: {repair_note}" if repair_note else ""
         shot_prompt = f"""
@@ -194,8 +326,6 @@ Naturalistic premium television performance. Subtle microexpressions, believable
             reference_uris=[],
             first_frame_uri=boundary_frames[index],
             last_frame_uri=boundary_frames[index + 1],
-            # Current documented audio-capable route is configurable separately.
-            # Keyframes carry identity so the audio model does not need reference-image support.
             require_native_audio=True,
         )
         return {
@@ -224,9 +354,6 @@ Naturalistic premium television performance. Subtle microexpressions, believable
             "model": result.get("model", ""),
         }
 
-    # All clips already have exact shared boundaries, so they no longer depend on
-    # the output of the previous Veo call. This is the main latency improvement:
-    # generate up to VEO_MAX_CONCURRENCY shots at once instead of serially.
     rendered: list[dict | None] = [None] * len(plan.shots)
     progress("rendering", 0, len(plan.shots), f"Rendering with concurrency={settings.veo_max_concurrency}")
     with ThreadPoolExecutor(max_workers=min(settings.veo_max_concurrency, len(plan.shots))) as pool:
@@ -251,8 +378,6 @@ Naturalistic premium television performance. Subtle microexpressions, believable
         progress("quality", 0, 1, "Supervising director is reviewing the master")
         quality_report = quality.evaluate(master["videoUri"], plan, req.locale)
 
-        # One targeted repair pass. Re-render only a few specifically identified
-        # defective shots, preserving the exact same shared keyframe boundaries.
         if not quality_report.passed and quality_report.badShotNumbers:
             repair_numbers = sorted({n for n in quality_report.badShotNumbers if 1 <= n <= len(plan.shots)})[:3]
             if repair_numbers:
@@ -308,5 +433,7 @@ Naturalistic premium television performance. Subtle microexpressions, believable
             "parallelism": settings.veo_max_concurrency,
             "singleMasterPlayback": True,
             "nativeVeoAudio": True,
+            "castPreflight": True,
+            "speakerLabelsCanonicalized": corrections,
         },
     }
