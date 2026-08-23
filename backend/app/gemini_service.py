@@ -67,16 +67,18 @@ QUALITY CONTRACT:
 - The core premise must be explainable in one sentence and create repeatable episode conflict.
 - Characters must have distinct motivations, knowledge states and relationships that create dramatic friction.
 - visualDescriptor for every major character must be an IMMUTABLE identity anchor: adult age range, facial structure, skin tone, hair, build, distinctive wardrobe and one signature prop/detail. Avoid vague adjectives.
+- voiceDescriptor for every speaking character must be an IMMUTABLE performance anchor written in English: perceived adult age, vocal register, timbre, cadence/accent appropriate to locale {req.locale}, emotional restraint, and speaking style. Never name or imitate a real performer.
+- The protagonist's posterPrompt MUST function as premium key art AND a reusable identity reference: one clearly visible protagonist, unobstructed face, canonical hair/wardrobe/signature prop, realistic natural skin, no collage, no extra faces, no text or logos.
+- The backdropPrompt MUST establish the primary recurring location/production design with consistent architecture, lighting and palette; avoid crowds and avoid unrelated characters.
 - The season must have escalation, not six unrelated premises.
-- Episode 1 MUST work as a real pilot: cold open → protagonist objective → inciting incident → consequential reaction → reveal → cliffhanger. Every beat must be causally connected.
+- Episode 1 MUST work as a real pilot: establish place/time and protagonist BEFORE the disturbance; then normal objective → inciting incident → consequential reaction → reveal → cliffhanger. Every beat must be causally connected.
 - Episode synopses should describe actions and consequences, not mood, symbolism or trailer language.
-- directorNotes for Episode 1 must state the primary location, protagonist wardrobe, lighting/time of day, key prop, and the exact dramatic reveal that the playable pilot cut should stage.
+- directorNotes for Episode 1 must state the primary location, protagonist wardrobe, lighting/time of day, key prop, opening normal-world action, and the exact dramatic reveal that the playable pilot opening should stage.
 - Prefer 2-4 recurring primary locations and a manageable cast so video continuity is achievable.
 - Do not use dream imagery, random glitches, mysterious silhouettes, abstract cosmic imagery or unexplained creatures unless the premise explicitly requires them.
 - If series: produce 4-6 episode outlines. If movie: produce 3 causally connected chapter segments.
 - canonFacts must be atomic facts that can be stored and queried later.
 - whyCreated must use only supplied taste signals.
-- backdropPrompt/posterPrompt must describe original cinematic art with no real actor likeness, text, logos or copyrighted visual properties.
 - teaserPrompt must describe a concrete story moment, not an abstract montage.
 """.strip()
 
@@ -85,12 +87,12 @@ QUALITY CONTRACT:
             types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=StudioBlueprint,
-                temperature=0.45,
+                temperature=0.35,
             ),
             types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=StudioBlueprint,
-                temperature=0.20,
+                temperature=0.18,
             ),
         ]
         for index, config in enumerate(attempts, start=1):
@@ -111,8 +113,6 @@ QUALITY CONTRACT:
                 errors.append(message)
                 log.warning("Structured blueprint generation %s", message)
 
-        # Last-resort JSON mode. This avoids a hard failure if the SDK/model rejects
-        # the Pydantic response schema while still validating the result ourselves.
         fallback_prompt = schema_prompt + """
 
 Return ONLY one valid JSON object with these exact top-level keys:
@@ -126,7 +126,7 @@ posterPrompt, teaserPrompt. Do not use markdown fences.
                 contents=fallback_prompt,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
-                    temperature=0.15,
+                    temperature=0.12,
                 ),
             )
             text = (response.text or "").strip()
@@ -168,8 +168,9 @@ posterPrompt, teaserPrompt. Do not use markdown fences.
         for c in bp.characters:
             chars.append({
                 "id": f"char-{uuid.uuid4().hex[:10]}", "universeId": universe_id, "name": c.name,
-                "role": c.role, "visualDescriptor": c.visualDescriptor, "motivation": c.motivation,
-                "relationships": c.relationships, "knowledgeState": c.knowledgeState, "avatarUrl": "", "status": c.status,
+                "role": c.role, "visualDescriptor": c.visualDescriptor, "voiceDescriptor": c.voiceDescriptor,
+                "motivation": c.motivation, "relationships": c.relationships, "knowledgeState": c.knowledgeState,
+                "avatarUrl": "", "status": c.status,
             })
         episodes = []
         for index, ep in enumerate(bp.episodes, start=1):
