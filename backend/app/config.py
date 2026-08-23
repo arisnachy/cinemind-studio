@@ -55,7 +55,17 @@ class Settings:
     veo_audio_model: str = os.getenv("VEO_AUDIO_MODEL", "veo-3.1-lite-generate-001")
     veo_duration_seconds: int = veo_duration()
     veo_poll_seconds: int = bounded_int("VEO_POLL_SECONDS", 5, 2, 30)
+
+    # VEO_MAX_CONCURRENCY controls local shot workers, not active Vertex LROs.
+    # Vertex has a separate long_running_online_prediction_requests_per_base_model
+    # quota. Keep a smaller adaptive in-flight window so worker parallelism cannot
+    # stampede that quota. The controller can reduce this at runtime after a 429.
     veo_max_concurrency: int = bounded_int("VEO_MAX_CONCURRENCY", 6, 1, 16)
+    veo_lro_max_inflight: int = bounded_int("VEO_LRO_MAX_INFLIGHT", 2, 1, 8)
+    veo_submit_retry_attempts: int = bounded_int("VEO_SUBMIT_RETRY_ATTEMPTS", 8, 1, 12)
+    veo_retry_base_seconds: int = bounded_int("VEO_RETRY_BASE_SECONDS", 8, 2, 60)
+    veo_retry_max_seconds: int = bounded_int("VEO_RETRY_MAX_SECONDS", 90, 10, 300)
+    veo_successes_before_probe: int = bounded_int("VEO_SUCCESSES_BEFORE_PROBE", 4, 2, 20)
     veo_operation_timeout_seconds: int = bounded_int("VEO_OPERATION_TIMEOUT_SECONDS", 900, 120, 1800)
 
     enable_images: bool = truthy("CINEMIND_ENABLE_IMAGE_GENERATION", True)
