@@ -9,6 +9,24 @@ from .config import settings
 from .gemini_service import studio
 
 
+def _spoken_language(locale: str) -> str:
+    normalized = (locale or "en-US").replace("_", "-")
+    known = {
+        "es-DO": "Dominican Spanish",
+        "es-ES": "Spanish from Spain",
+        "es-US": "Latin American Spanish",
+        "en-US": "American English",
+        "en-GB": "British English",
+        "fr-FR": "French",
+        "pt-BR": "Brazilian Portuguese",
+        "de-DE": "German",
+        "it-IT": "Italian",
+        "ja-JP": "Japanese",
+        "ko-KR": "Korean",
+    }
+    return known.get(normalized, normalized)
+
+
 class VideoService:
     def generate_prompt(
         self,
@@ -16,6 +34,8 @@ class VideoService:
         locale: str = "en-US",
         narration: str = "",
         dialogue: str = "",
+        dialogue_speaker: str = "",
+        voice_descriptor: str = "",
         reference_uris: list[str] | None = None,
         first_frame_uri: str = "",
     ) -> dict:
@@ -24,20 +44,36 @@ class VideoService:
         if not settings.video_gcs_uri:
             raise RuntimeError("CINEMIND_VIDEO_GCS_URI must point to a writable gs:// bucket prefix")
 
-        # Spoken language is authored by Gemini and rendered deterministically by
-        # Gemini-TTS after picture generation. Veo supplies picture + restrained
-        # diegetic ambience only. This prevents random English speech/vocalizations.
-        audio_direction = (
-            "\nAUDIO DIRECTION: DIEGETIC AMBIENCE ONLY. "
-            "Do not generate dialogue, narration, intelligible speech, singing, whispers, moans, breaths, filler vocalizations, or any spoken language. "
-            "Use only purposeful environmental sound appropriate to the visible action. "
-        )
+        language = _spoken_language(locale)
+        if dialogue.strip():
+            speaker = dialogue_speaker.strip() or "the visible speaking character"
+            voice = voice_descriptor.strip() or f"natural adult voice appropriate to {language}, restrained premium-drama delivery"
+            audio_direction = (
+                "\nNATIVE AUDIO DIRECTION: Generate synchronized production audio in the SAME pass as the picture. "
+                f"The character {speaker} speaks exactly this line in {language}: \"{dialogue.strip()}\". "
+                f"VOICE IDENTITY FOR {speaker}: {voice}. Preserve this vocal identity across the series. "
+                "Lip movement must match the spoken line naturally. Do not translate, paraphrase, add English, add another speaker, or invent extra words. "
+                "Keep environmental ambience realistic and subordinate to the dialogue. No narrator unless explicitly requested. "
+            )
+        elif narration.strip():
+            voice = voice_descriptor.strip() or f"restrained premium-drama narrator speaking {language}"
+            audio_direction = (
+                "\nNATIVE AUDIO DIRECTION: Generate synchronized production audio in the SAME pass as the picture. "
+                f"A single off-screen narrator says exactly this line in {language}: \"{narration.strip()}\". "
+                f"NARRATOR VOICE IDENTITY: {voice}. Do not translate, paraphrase, add English, or add other speech. "
+                "Keep environmental ambience subtle under the narration. "
+            )
+        else:
+            audio_direction = (
+                "\nNATIVE AUDIO DIRECTION: Generate only realistic diegetic environmental sound for the visible action. "
+                "No dialogue, narration, intelligible speech, whispers, moans, random breathing, filler vocalizations, singing, or off-screen voices. "
+            )
 
         if first_frame_uri:
             continuity_instruction = (
                 "The supplied first frame is the exact final visual state of the previous shot. "
                 "Continue from it immediately: same people, faces, hair, wardrobe, props, geography, lighting, screen direction and dramatic action. "
-                "Do not reset the scene or re-establish the location. "
+                "Do not reset poses, re-establish the location, or jump forward in story time. "
             )
         else:
             continuity_instruction = (
@@ -47,9 +83,10 @@ class VideoService:
 
         final_prompt = (
             f"{prompt.strip()}\n"
-            "PREMIUM SERIES DIRECTION: This is one causally connected shot from a scripted television episode, not a trailer montage. "
+            "PREMIUM SCRIPTED-SERIES DIRECTION: This is one shot from the OPENING of a coherent television episode, not a trailer montage and not an isolated AI clip. "
             f"{continuity_instruction}"
-            "Do not introduce new characters or locations unless explicitly directed. Avoid random symbolic imagery and montage logic. "
+            "The visible action must begin where the prior story beat logically leaves off. Use natural human blocking and believable eyelines. "
+            "Do not introduce new characters, props or locations unless explicitly directed. Avoid random symbolic imagery and montage logic. "
             "This is an original CINEMIND production. No real actors, copyrighted characters, logos, or franchise visual identity. "
             f"{audio_direction}"
         )
@@ -58,7 +95,9 @@ class VideoService:
         config_kwargs: dict = {
             "number_of_videos": 1,
             "duration_seconds": settings.veo_duration_seconds,
-            "enhance_prompt": True,
+            # We already construct a detailed cinematic + exact-dialogue prompt.
+            # Keeping enhancement off reduces unwanted rewrites/translation of speech.
+            "enhance_prompt": False,
             "aspect_ratio": "16:9",
             "output_gcs_uri": settings.video_gcs_uri,
         }
@@ -69,9 +108,6 @@ class VideoService:
         }
 
         if first_frame_uri:
-            # Image-to-video handoff: the last frame of the preceding shot becomes
-            # the exact first frame of this one. This avoids the 30-second extension
-            # ceiling while preserving spatial/character continuity.
             call_kwargs["image"] = types.Image(gcs_uri=first_frame_uri, mime_type="image/png")
         else:
             for uri in (reference_uris or [])[:3]:
@@ -83,7 +119,6 @@ class VideoService:
                         )
                     )
             if refs:
-                # Veo reference-image mode is 8 seconds.
                 config_kwargs["duration_seconds"] = 8
                 config_kwargs["reference_images"] = refs
 
@@ -112,6 +147,8 @@ class VideoService:
             "durationSeconds": duration,
             "referenceCount": len(refs),
             "firstFrameApplied": bool(first_frame_uri),
+            "nativeAudio": True,
+            "spokenLocale": locale,
         }
 
     def generate(self, title: dict, locale: str = "en-US") -> dict:
