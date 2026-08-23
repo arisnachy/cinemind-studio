@@ -1,15 +1,25 @@
 from __future__ import annotations
 
 import math
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Callable
 
 from google.genai import types
 
 from .compositor_service import composer
 from .config import settings
 from .gemini_service import studio
+from .quality_service import quality
 from .reference_service import references
 from .schemas import EpisodeRenderPlan, EpisodeRenderRequest
+from .storyboard_service import storyboard_frames
 from .video_service import videos
+
+ProgressCallback = Callable[[str, int, int, str], None]
+
+
+def _noop_progress(stage: str, completed: int, total: int, message: str) -> None:
+    return None
 
 
 def _episode_from_request(req: EpisodeRenderRequest) -> dict:
@@ -26,53 +36,57 @@ def _episode_from_request(req: EpisodeRenderRequest) -> dict:
     }
 
 
-def _opening_structure(shot_count: int) -> str:
+def _story_structure(shot_count: int) -> str:
     if shot_count <= 3:
         return """
-- SHOT 1 — ORIENTATION / NORMAL WORLD: establish WHERE and WHEN we are with a readable wide/medium composition, then introduce the protagonist doing an ordinary concrete task. The viewer knows nothing yet. Do NOT begin mid-crisis.
-- SHOT 2 — INCITING DISTURBANCE: the ordinary task is interrupted by the first unusual event. The event must be visible and causally understandable.
-- SHOT 3 — REACTION + HOOK: the protagonist investigates/reacts and discovers one concrete fact that changes the meaning of what just happened. End on a composed visual hold suitable for a series-title break.
+- SHOT 1 — ORIENTATION / NORMAL WORLD: establish where and when we are and introduce the protagonist doing an ordinary concrete task. Never begin mid-crisis.
+- SHOT 2 — INCITING DISTURBANCE: the normal task is interrupted by the first specific visible event.
+- SHOT 3 — REACTION + HOOK: the protagonist reacts, learns one concrete fact, and the cut ends on a readable title-break composition.
 """.strip()
-    if shot_count == 4:
-        return """
-- SHOT 1 — ORIENTATION: establish location, time, protagonist and ordinary activity before any mystery.
-- SHOT 2 — CHARACTER / OBJECTIVE: show the protagonist pursuing a normal immediate goal and reveal personality through behavior or one natural line.
-- SHOT 3 — INCITING INCIDENT: something specific and visible breaks the normal pattern.
-- SHOT 4 — CONSEQUENCE / HOOK: the protagonist reacts, finds a concrete clue or consequence, and the scene ends on a clean title-break image.
+    if shot_count <= 12:
+        return f"""
+- SHOT 1 — ORIENTATION: establish place, time and protagonist before any mystery.
+- SHOT 2 — NORMAL OBJECTIVE: show what the protagonist is trying to accomplish in ordinary life.
+- SHOT 3 — INCITING INCIDENT: a specific visible event breaks the normal pattern.
+- SHOTS 4..{max(4, shot_count - 2)} — REACTION / ESCALATION: every beat is a consequence of the previous beat.
+- SHOT {shot_count - 1} — REVEAL: concrete information changes the protagonist's understanding.
+- SHOT {shot_count} — TITLE-BREAK HOOK: a direct consequence of the reveal, ending on a deliberate cold-open composition.
 """.strip()
+
+    cold_end = max(6, round(shot_count * 0.10))
+    act1_end = max(cold_end + 2, round(shot_count * 0.30))
+    midpoint = max(act1_end + 2, round(shot_count * 0.55))
+    act2_end = max(midpoint + 2, round(shot_count * 0.80))
     return f"""
-- SHOT 1 — ORIENTATION: establish place/time and protagonist in ordinary life. Never start mid-conflict.
-- SHOT 2 — NORMAL OBJECTIVE: continue the same scene and make us understand what the protagonist is trying to do before the premise intrudes.
-- SHOT 3 — INCITING INCIDENT: introduce the first visible disruption.
-- SHOTS 4..{max(4, shot_count - 2)} — REACTION / ESCALATION: every action is caused by the previous beat; preserve geography and character state.
-- SHOT {shot_count - 1} — REVEAL: one concrete piece of information changes the protagonist's understanding.
-- SHOT {shot_count} — TITLE-BREAK HOOK: immediate emotional/physical consequence of the reveal; finish on a strong readable composition that feels like the end of a cold open, not the middle of a random scene.
+FULL EPISODE STRUCTURE ({shot_count} shots):
+- SHOTS 1..{cold_end}: COLD OPEN. Orient viewer first, establish protagonist normality, then inciting disturbance and a clean title-break hook.
+- SHOTS {cold_end + 1}..{act1_end}: ACT I. Consequences, clear episode objective, relationships and grounded obstacles.
+- SHOTS {act1_end + 1}..{midpoint}: ACT II-A. Escalation through causally connected actions; no filler montage.
+- SHOTS {midpoint + 1}..{act2_end}: ACT II-B. Midpoint information changes strategy; complications narrow options.
+- SHOTS {act2_end + 1}..{max(act2_end + 1, shot_count - 3)}: CLIMAX BUILD. Actions converge physically and emotionally.
+- SHOTS {max(1, shot_count - 2)}..{shot_count}: CLIMAX / AFTERMATH / NEXT-EPISODE HOOK. Resolve the episode's immediate objective while preserving the series engine.
 """.strip()
 
 
 def build_plan(req: EpisodeRenderRequest) -> EpisodeRenderPlan:
     episode = _episode_from_request(req)
     seconds_per_shot = settings.veo_duration_seconds
-    shot_count = max(3, min(12, math.ceil(req.targetSeconds / seconds_per_shot)))
+    shot_count = max(3, min(math.ceil(req.targetSeconds / seconds_per_shot), math.ceil(settings.long_form_max_seconds / seconds_per_shot)))
     meta = req.title.get("_cinemind", {}) or {}
     canon_facts = meta.get("canonFacts", []) or []
     cast = req.title.get("cast", []) or []
     cast_summary = "\n".join(
         (
-            f"- {c.get('name')}: VISUAL={c.get('visualDescriptor', '')}; "
-            f"VOICE={c.get('voiceDescriptor', '')}; role={c.get('role', '')}; "
-            f"motivation={c.get('motivation', '')}; knowledge={c.get('knowledgeState', '')}"
+            f"- {c.get('name')}: VISUAL={c.get('visualDescriptor', '')}; VOICE={c.get('voiceDescriptor', '')}; "
+            f"role={c.get('role', '')}; motivation={c.get('motivation', '')}; knowledge={c.get('knowledgeState', '')}"
         )
         for c in cast[:6]
     )
 
-    opening_structure = _opening_structure(shot_count)
-
+    structure = _story_structure(shot_count)
     prompt = f"""
-You are the lead television director, pilot writer and continuity supervisor for CINEMIND.
-You are directing the OPENING COLD OPEN of Episode 1. The viewer has NEVER seen this world or these characters before.
-Do NOT create a trailer, montage, dream sequence, recap, abstract mood reel, or a scene that feels like it began before the viewer arrived.
-Build one coherent premium-series opening made of exactly {shot_count} consecutive shots.
+You are the lead television director, episode writer, storyboard artist and continuity supervisor for CINEMIND.
+Create one coherent LIVE-ACTION scripted episode plan of exactly {shot_count} Veo shots. This is not a trailer, montage, recap, mood reel, or collection of disconnected images.
 
 SERIES: {req.title.get('title')}
 UNIVERSE: {req.title.get('universeName')}
@@ -81,31 +95,31 @@ EPISODE: {episode.get('title')}
 EPISODE SYNOPSIS: {episode.get('synopsis')}
 DIRECTOR NOTES: {episode.get('directorNotes', '')}
 VIEWER LOCALE: {req.locale}
+TARGET MASTER LENGTH: approximately {req.targetSeconds} seconds
 
-CAST BIBLE — IMMUTABLE ACROSS SHOTS:
+CAST BIBLE — IMMUTABLE:
 {cast_summary or '- Maintain the same original fictional adult characters from shot to shot.'}
 
 CANON:
 {chr(10).join('- ' + str(x) for x in canon_facts[:10]) or '- Preserve the established series premise.'}
 
-OPENING GRAMMAR — FOLLOW THIS ORDER:
-{opening_structure}
+STORY GRAMMAR:
+{structure}
 
-QUALITY CONTRACT:
-- Shot 1 MUST orient the viewer. Start with readable geography and an ordinary action; do not open on an unexplained reaction, random object close-up, screaming, chase, mysterious symbol, or crisis already in progress.
-- The audience must understand protagonist + place + immediate goal BEFORE the inciting incident.
-- Keep the first half in ONE primary sceneId/location unless a motivated transition is essential.
-- Use at most two speaking characters in this short opening.
-- Prefer SHOWING over narration. Use narration only if the premise genuinely requires a narrator; otherwise leave narration empty.
-- Use at most ONE short spoken line in a shot. Dialogue must sound like something a person would naturally say in that exact moment, not exposition.
-- dialogueSpeaker MUST be the exact name of a character from the cast bible when dialogue exists.
-- narration/dialogue/subtitle must be natural for locale {req.locale}. Never switch to English unless the viewer locale is English.
-- visualPromptEnglish stays English and must use the Google Veo directing formula: cinematography + subject + action + context + style/ambience.
-- Every continuityAnchor repeats immutable identity/state: face, hair, age, wardrobe, signature prop, current body position, what each hand is doing, set geography, lighting and time of day.
-- Each shot begins from the exact state left by the previous shot. No teleporting, costume changes, unexplained new props, unexplained new people or time jumps.
-- No generic mysterious whispers, random breathing, abstract glitches, unexplained creatures, unrelated symbols or AI-video filler.
-- Camera language must feel intentional and restrained: establish with wide/medium, then move closer only when story information earns it.
-- Final shot must feel like the END OF A COLD OPEN / TITLE BREAK, not an arbitrary cutoff.
+MANDATORY QUALITY RULES:
+- A new viewer must understand place, protagonist and normal immediate objective before the first unexplained disruption.
+- Do not start in the middle of a chase, argument, scream, reaction, unexplained close-up, mystery object, or crisis.
+- Every shot must have a causal reason to exist and inherit state from the preceding shot.
+- Keep locations manageable; within one scene preserve geography and screen direction.
+- Use ordinary human behavior and grounded production design. Avoid generic cyberpunk neon, abstract symbols, dream imagery, glossy AI faces, unexplained sci-fi interfaces, trailer poses and random spectacle unless the story explicitly earns them.
+- visualPromptEnglish uses: cinematography + subject + action + context + style/ambience.
+- startFramePromptEnglish describes the EXACT visible first frame of the shot: people, pose, hands, props, eyelines, camera, set, light.
+- endFramePromptEnglish describes the EXACT visible final frame after the action. For adjacent shots, the prior end frame and next start frame must be compatible enough to be represented by ONE shared image.
+- Naturalistic live-action realism: real skin texture, practical lighting, plausible materials, restrained lensing and camera movement.
+- narration/dialogue/subtitle must be natural for locale {req.locale}; never switch to English unless the locale is English.
+- At most one short spoken line per 8-second shot. dialogueSpeaker must exactly match a cast name.
+- Every continuityAnchor repeats immutable identity and current physical state: face, hair, age, wardrobe, props, body position, set geography, lighting, time.
+- Final beat must be intentional, not an arbitrary cutoff.
 """.strip()
 
     response = studio.client().models.generate_content(
@@ -114,7 +128,7 @@ QUALITY CONTRACT:
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
             response_schema=EpisodeRenderPlan,
-            temperature=0.12,
+            temperature=0.08,
         ),
     )
     plan = response.parsed if isinstance(response.parsed, EpisodeRenderPlan) else EpisodeRenderPlan.model_validate_json(response.text)
@@ -124,12 +138,19 @@ QUALITY CONTRACT:
     return plan
 
 
-def render_episode(req: EpisodeRenderRequest) -> dict:
+def render_episode(req: EpisodeRenderRequest, progress: ProgressCallback | None = None) -> dict:
+    progress = progress or _noop_progress
+    progress("planning", 0, 1, "Writing complete episode and shot grammar")
     plan = build_plan(req)
+    progress("planning", 1, 1, f"Locked {len(plan.shots)}-shot narrative plan")
+
+    progress("reality_pack", 0, 1, "Creating photoreal cast and location anchors")
     reference_uris = references.build_for_title(req.title)
-    rendered: list[dict] = []
-    previous_scene_id = ""
-    previous_last_frame_uri = ""
+    progress("reality_pack", 1, 1, f"Locked {len(reference_uris)} Reality Pack references")
+
+    progress("storyboard", 0, len(plan.shots) + 1, "Generating shared start/end keyframes")
+    boundary_frames = storyboard_frames.build_shared_boundaries(plan, reference_uris)
+    progress("storyboard", len(boundary_frames), len(boundary_frames), "Storyboard boundaries locked")
 
     cast = req.title.get("cast", []) or []
     voice_by_name = {
@@ -138,29 +159,30 @@ def render_episode(req: EpisodeRenderRequest) -> dict:
         if c.get("name")
     }
 
-    for index, shot in enumerate(plan.shots, start=1):
-        same_scene_handoff = bool(previous_last_frame_uri and previous_scene_id and shot.sceneId == previous_scene_id)
-        shot_prompt = f"""
-SHOT {index}/{len(plan.shots)} — SCENE {shot.sceneId}
-STORY BEAT: {shot.storyBeat}
-PURPOSE: {shot.scenePurpose}
-LOCATION: {shot.location}
-CHARACTERS PRESENT: {', '.join(shot.characters) if shot.characters else 'none'}
-SHOT TYPE: {shot.shotType}
-CONTINUITY STATE AT START: {shot.continuityAnchor}
-VISUAL DIRECTION: {shot.visualPromptEnglish}
-
-Stage exactly this beat as part of the opening cold open. It must visibly follow the prior dramatic action and must not feel like a standalone AI clip.
-If a first frame is supplied, continue its exact body positions, eyelines, props, screen direction and action immediately.
-Naturalistic premium television performance. Restrained acting. No trailer poses, no slow-motion hero shots unless specifically motivated by the story.
-""".strip()
-
+    def render_one(index: int, repair_note: str = "") -> dict:
+        shot = plan.shots[index]
         dialogue = shot.dialogue.strip()
         narration_text = shot.narration.strip() if req.includeNarration and not dialogue else ""
         speaker = shot.dialogueSpeaker.strip() if dialogue else ""
         voice_descriptor = voice_by_name.get(speaker, "") if speaker else ""
         if dialogue and speaker and speaker not in voice_by_name:
-            raise RuntimeError(f"Shot {index} dialogue speaker {speaker!r} is not in the locked cast bible")
+            raise RuntimeError(f"Shot {index + 1} dialogue speaker {speaker!r} is not in the locked cast bible")
+
+        repair = f"\nSUPERVISING-DIRECTOR REPAIR NOTE: {repair_note}" if repair_note else ""
+        shot_prompt = f"""
+SHOT {index + 1}/{len(plan.shots)} — SCENE {shot.sceneId}
+STORY BEAT: {shot.storyBeat}
+PURPOSE: {shot.scenePurpose}
+LOCATION: {shot.location}
+CHARACTERS PRESENT: {', '.join(shot.characters) if shot.characters else 'none'}
+SHOT TYPE: {shot.shotType}
+CONTINUITY STATE: {shot.continuityAnchor}
+VISUAL DIRECTION: {shot.visualPromptEnglish}
+
+Move naturally from the supplied START frame to the supplied END frame while performing exactly this story beat.
+Naturalistic premium television performance. Subtle microexpressions, believable eyelines and body mechanics. No trailer pose or unrelated insert.
+{repair}
+""".strip()
 
         result = videos.generate_prompt(
             shot_prompt,
@@ -169,14 +191,15 @@ Naturalistic premium television performance. Restrained acting. No trailer poses
             dialogue=dialogue,
             dialogue_speaker=speaker,
             voice_descriptor=voice_descriptor,
-            reference_uris=reference_uris if not same_scene_handoff else [],
-            first_frame_uri=previous_last_frame_uri if same_scene_handoff else "",
+            reference_uris=[],
+            first_frame_uri=boundary_frames[index],
+            last_frame_uri=boundary_frames[index + 1],
+            # Current documented audio-capable route is configurable separately.
+            # Keyframes carry identity so the audio model does not need reference-image support.
+            require_native_audio=True,
         )
-
-        last_frame_uri = composer.extract_last_frame(result["videoUri"])
-
-        rendered.append({
-            "shotNumber": index,
+        return {
+            "shotNumber": index + 1,
             "sceneId": shot.sceneId,
             "storyBeat": shot.storyBeat,
             "scenePurpose": shot.scenePurpose,
@@ -190,24 +213,73 @@ Naturalistic premium television performance. Restrained acting. No trailer poses
             "narration": narration_text,
             "dialogue": dialogue,
             "dialogueSpeaker": speaker,
-            "narrationUrl": "",
-            "narrationUri": "",
-            "narrationModel": "",
-            "narrationVoice": "",
             "voiceRole": speaker if dialogue else ("native Veo narrator" if narration_text else ""),
             "voiceDescriptor": voice_descriptor,
             "audioMode": "veo-native",
             "continuityAnchor": shot.continuityAnchor,
-            "referenceCount": result.get("referenceCount", 0),
+            "firstFrameUri": boundary_frames[index],
+            "lastFrameUri": boundary_frames[index + 1],
             "firstFrameApplied": result.get("firstFrameApplied", False),
-            "lastFrameUri": last_frame_uri,
-        })
-        previous_scene_id = shot.sceneId
-        previous_last_frame_uri = last_frame_uri
+            "lastFrameApplied": result.get("lastFrameApplied", False),
+            "model": result.get("model", ""),
+        }
 
-    # The compositor now only normalizes and concatenates Veo's own synchronized
-    # picture+audio. It does not overlay an external TTS performance.
-    master = composer.compose(rendered, req.locale)
+    # All clips already have exact shared boundaries, so they no longer depend on
+    # the output of the previous Veo call. This is the main latency improvement:
+    # generate up to VEO_MAX_CONCURRENCY shots at once instead of serially.
+    rendered: list[dict | None] = [None] * len(plan.shots)
+    progress("rendering", 0, len(plan.shots), f"Rendering with concurrency={settings.veo_max_concurrency}")
+    with ThreadPoolExecutor(max_workers=min(settings.veo_max_concurrency, len(plan.shots))) as pool:
+        future_map = {pool.submit(render_one, index): index for index in range(len(plan.shots))}
+        completed = 0
+        for future in as_completed(future_map):
+            index = future_map[future]
+            rendered[index] = future.result()
+            completed += 1
+            progress("rendering", completed, len(plan.shots), f"Rendered shot {index + 1}/{len(plan.shots)}")
+
+    segments = [segment for segment in rendered if segment is not None]
+    if len(segments) != len(plan.shots):
+        raise RuntimeError("Parallel renderer returned an incomplete shot set")
+
+    progress("composing", 0, 1, "Composing continuous master")
+    master = composer.compose(segments, req.locale)
+    progress("composing", 1, 1, "Continuous master composed")
+
+    quality_report = None
+    if settings.enable_quality_gate:
+        progress("quality", 0, 1, "Supervising director is reviewing the master")
+        quality_report = quality.evaluate(master["videoUri"], plan, req.locale)
+
+        # One targeted repair pass. Re-render only a few specifically identified
+        # defective shots, preserving the exact same shared keyframe boundaries.
+        if not quality_report.passed and quality_report.badShotNumbers:
+            repair_numbers = sorted({n for n in quality_report.badShotNumbers if 1 <= n <= len(plan.shots)})[:3]
+            if repair_numbers:
+                instructions = " ".join(quality_report.repairInstructions) or quality_report.summary
+                progress("repair", 0, len(repair_numbers), f"Repairing shots {repair_numbers}")
+                with ThreadPoolExecutor(max_workers=min(settings.veo_max_concurrency, len(repair_numbers))) as pool:
+                    future_map = {
+                        pool.submit(render_one, number - 1, instructions): number
+                        for number in repair_numbers
+                    }
+                    repaired = 0
+                    for future in as_completed(future_map):
+                        number = future_map[future]
+                        segments[number - 1] = future.result()
+                        repaired += 1
+                        progress("repair", repaired, len(repair_numbers), f"Repaired shot {number}")
+                master = composer.compose(segments, req.locale)
+                quality_report = quality.evaluate(master["videoUri"], plan, req.locale)
+
+        progress("quality", 1, 1, "Quality review complete")
+        if not quality_report.passed:
+            raise RuntimeError(
+                "QUALITY_GATE_FAILED: "
+                f"narrative={quality_report.narrativeCoherence}, continuity={quality_report.visualContinuity}, "
+                f"realism={quality_report.realism}, opening={quality_report.openingClarity}, "
+                f"language={quality_report.languageConsistency}. {quality_report.summary}"
+            )
 
     return {
         "status": "READY",
@@ -220,17 +292,20 @@ Naturalistic premium television performance. Restrained acting. No trailer poses
         "cliffhanger": plan.cliffhanger,
         "summary": plan.summary,
         "totalDurationSeconds": master["durationSeconds"],
-        "segments": rendered,
+        "segments": segments,
         "finalPlaybackUrl": master["playbackUrl"],
         "finalVideoUri": master["videoUri"],
         "composition": master["composition"],
-        "model": settings.veo_model,
+        "model": settings.veo_audio_model,
         "audioMode": "veo-native-synchronized",
-        "ttsModel": "",
+        "qualityGate": quality_report.model_dump() if quality_report else {"passed": True, "disabled": True},
         "continuityLock": {
             "enabled": bool(reference_uris),
             "referenceImages": len(reference_uris),
-            "sameSceneFirstFrameHandoff": True,
+            "sharedStoryboardBoundaries": len(boundary_frames),
+            "firstAndLastFrame": True,
+            "parallelShotRendering": True,
+            "parallelism": settings.veo_max_concurrency,
             "singleMasterPlayback": True,
             "nativeVeoAudio": True,
         },
