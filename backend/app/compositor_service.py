@@ -7,7 +7,11 @@ import uuid
 from pathlib import Path
 from urllib.parse import quote
 
-import imageio_ffmpeg
+try:
+    import imageio_ffmpeg
+except ModuleNotFoundError:  # Keep the API alive so /api/health can report the missing composer.
+    imageio_ffmpeg = None
+
 from google.cloud import storage
 
 from .config import settings
@@ -19,9 +23,18 @@ class EpisodeCompositor:
     def __init__(self) -> None:
         self._storage = storage.Client(project=settings.project) if settings.project else storage.Client()
 
+    @staticmethod
+    def _ffmpeg_exe() -> str:
+        if imageio_ffmpeg is None:
+            raise RuntimeError(
+                "Episode compositor dependency is not installed. Run: "
+                ".\\.venv\\Scripts\\python.exe -m pip install -e ."
+            )
+        return imageio_ffmpeg.get_ffmpeg_exe()
+
     def preflight(self) -> dict:
         try:
-            executable = Path(imageio_ffmpeg.get_ffmpeg_exe())
+            executable = Path(self._ffmpeg_exe())
             return {"available": executable.exists(), "executable": executable.name}
         except Exception as exc:
             return {"available": False, "error": str(exc)}
@@ -66,30 +79,20 @@ class EpisodeCompositor:
             raise RuntimeError(f"FFmpeg failed ({proc.returncode}): {tail}")
 
     def extract_last_frame(self, video_uri: str) -> str:
-        """Extract the final stable frame from a Veo clip for next-shot handoff."""
-        ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+        ffmpeg = self._ffmpeg_exe()
         with tempfile.TemporaryDirectory(prefix="cinemind-frame-") as tmp:
             work = Path(tmp)
             source = work / "shot.mp4"
             frame = work / "last-frame.png"
             self._download(video_uri, source)
             self._run([
-                ffmpeg,
-                "-y",
-                "-sseof",
-                "-0.20",
-                "-i",
-                str(source),
-                "-frames:v",
-                "1",
-                "-vf",
-                "scale=1280:-2",
-                str(frame),
+                ffmpeg, "-y", "-sseof", "-0.20", "-i", str(source),
+                "-frames:v", "1", "-vf", "scale=1280:-2", str(frame),
             ])
             return self._upload(frame, "continuity/frames", "png", "image/png")
 
     def _normalize_segment(self, segment: dict, work: Path, index: int) -> Path:
-        ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+        ffmpeg = self._ffmpeg_exe()
         video_path = work / f"shot-{index:03d}.mp4"
         normalized = work / f"shot-{index:03d}-master.mp4"
         self._download(segment["videoUri"], video_path)
@@ -105,12 +108,7 @@ class EpisodeCompositor:
             voice_path = work / f"voice-{index:03d}.wav"
             self._download(voice_uri, voice_path)
             mix_command = [
-                ffmpeg,
-                "-y",
-                "-i",
-                str(video_path),
-                "-i",
-                str(voice_path),
+                ffmpeg, "-y", "-i", str(video_path), "-i", str(voice_path),
                 "-filter_complex",
                 (
                     f"[0:v]{video_filter}[v];"
@@ -118,29 +116,10 @@ class EpisodeCompositor:
                     "[1:a]volume=1.0,apad[voice];"
                     "[amb][voice]amix=inputs=2:duration=first:dropout_transition=0[a]"
                 ),
-                "-map",
-                "[v]",
-                "-map",
-                "[a]",
-                "-t",
-                str(duration),
-                "-c:v",
-                "libx264",
-                "-preset",
-                "veryfast",
-                "-crf",
-                "20",
-                "-c:a",
-                "aac",
-                "-b:a",
-                "160k",
-                "-ar",
-                "48000",
-                "-ac",
-                "2",
-                "-movflags",
-                "+faststart",
-                str(normalized),
+                "-map", "[v]", "-map", "[a]", "-t", str(duration),
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2",
+                "-movflags", "+faststart", str(normalized),
             ]
             try:
                 self._run(mix_command)
@@ -148,70 +127,21 @@ class EpisodeCompositor:
             except Exception as exc:
                 log.warning("Ambient/TTS mix failed for shot %s, using voice-only mix: %s", index, exc)
                 self._run([
-                    ffmpeg,
-                    "-y",
-                    "-i",
-                    str(video_path),
-                    "-i",
-                    str(voice_path),
-                    "-filter_complex",
-                    f"[0:v]{video_filter}[v];[1:a]volume=1.0,apad[a]",
-                    "-map",
-                    "[v]",
-                    "-map",
-                    "[a]",
-                    "-t",
-                    str(duration),
-                    "-c:v",
-                    "libx264",
-                    "-preset",
-                    "veryfast",
-                    "-crf",
-                    "20",
-                    "-c:a",
-                    "aac",
-                    "-b:a",
-                    "160k",
-                    "-ar",
-                    "48000",
-                    "-ac",
-                    "2",
-                    "-movflags",
-                    "+faststart",
-                    str(normalized),
+                    ffmpeg, "-y", "-i", str(video_path), "-i", str(voice_path),
+                    "-filter_complex", f"[0:v]{video_filter}[v];[1:a]volume=1.0,apad[a]",
+                    "-map", "[v]", "-map", "[a]", "-t", str(duration),
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                    "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2",
+                    "-movflags", "+faststart", str(normalized),
                 ])
                 return normalized
 
         self._run([
-            ffmpeg,
-            "-y",
-            "-i",
-            str(video_path),
-            "-vf",
-            video_filter,
-            "-map",
-            "0:v:0",
-            "-map",
-            "0:a?",
-            "-t",
-            str(duration),
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "20",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "160k",
-            "-ar",
-            "48000",
-            "-ac",
-            "2",
-            "-movflags",
-            "+faststart",
-            str(normalized),
+            ffmpeg, "-y", "-i", str(video_path), "-vf", video_filter,
+            "-map", "0:v:0", "-map", "0:a?", "-t", str(duration),
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+            "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2",
+            "-movflags", "+faststart", str(normalized),
         ])
         return normalized
 
@@ -219,7 +149,7 @@ class EpisodeCompositor:
         if not segments:
             raise RuntimeError("Cannot compose an empty episode")
 
-        ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+        ffmpeg = self._ffmpeg_exe()
         with tempfile.TemporaryDirectory(prefix="cinemind-master-") as tmp:
             work = Path(tmp)
             normalized: list[Path] = []
@@ -234,43 +164,14 @@ class EpisodeCompositor:
             final_path = work / "episode-master.mp4"
             try:
                 self._run([
-                    ffmpeg,
-                    "-y",
-                    "-f",
-                    "concat",
-                    "-safe",
-                    "0",
-                    "-i",
-                    concat_file.name,
-                    "-c",
-                    "copy",
-                    "-movflags",
-                    "+faststart",
-                    final_path.name,
+                    ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", concat_file.name,
+                    "-c", "copy", "-movflags", "+faststart", final_path.name,
                 ], cwd=work)
             except Exception:
                 self._run([
-                    ffmpeg,
-                    "-y",
-                    "-f",
-                    "concat",
-                    "-safe",
-                    "0",
-                    "-i",
-                    concat_file.name,
-                    "-c:v",
-                    "libx264",
-                    "-preset",
-                    "veryfast",
-                    "-crf",
-                    "20",
-                    "-c:a",
-                    "aac",
-                    "-b:a",
-                    "160k",
-                    "-movflags",
-                    "+faststart",
-                    final_path.name,
+                    ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", concat_file.name,
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                    "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", final_path.name,
                 ], cwd=work)
 
             uri = self._upload(final_path, "episodes/master", "mp4", "video/mp4")
