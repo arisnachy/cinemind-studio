@@ -2,10 +2,12 @@ from __future__ import annotations
 from typing import Literal
 from pydantic import BaseModel, Field
 
+
 class TasteStats(BaseModel):
     titlesGenerated: int = 0
     episodesWatched: int = 0
     canonInterventions: int = 0
+
 
 class TasteProfile(BaseModel):
     id: str
@@ -18,6 +20,7 @@ class TasteProfile(BaseModel):
     universesFollowed: list[str] = []
     stats: TasteStats = TasteStats()
 
+
 class GenerateTitleRequest(BaseModel):
     prompt: str = ""
     autonomous: bool = False
@@ -28,8 +31,9 @@ class GenerateTitleRequest(BaseModel):
     universeId: str | None = None
     locale: str = "en-US"
     autoProducePilot: bool = True
-    pilotSeconds: int = Field(default=48, ge=24, le=96)
+    pilotSeconds: int = Field(default=48, ge=24, le=1800)
     profile: TasteProfile
+
 
 class CharacterBlueprint(BaseModel):
     name: str
@@ -41,17 +45,20 @@ class CharacterBlueprint(BaseModel):
     knowledgeState: str
     status: Literal["Alive", "Missing", "Transformed", "Deceased"] = "Alive"
 
+
 class EpisodeBlueprint(BaseModel):
     title: str
     synopsis: str
     durationMinutes: int = Field(default=42, ge=4, le=180)
     directorNotes: str = ""
 
+
 class WhyFactorBlueprint(BaseModel):
     factor: str
     affinityScore: Literal["High", "Very High", "Rising", "Core Habit"]
     description: str
     sourceSignal: str
+
 
 class StudioBlueprint(BaseModel):
     universeName: str
@@ -71,19 +78,23 @@ class StudioBlueprint(BaseModel):
     posterPrompt: str
     teaserPrompt: str
 
+
 class CanonAnalyzeRequest(BaseModel):
     title: dict
     requestedChange: str = "Analyze this story for continuity conflicts."
+
 
 class CanonResolveRequest(BaseModel):
     title: dict
     strategy: Literal["preserve", "rewrite", "fork"]
     requestedChange: str = ""
 
+
 class VideoRequest(BaseModel):
     title: dict
     episodeId: str | None = None
     locale: str = "en-US"
+
 
 class EpisodeShotBlueprint(BaseModel):
     shotNumber: int
@@ -94,11 +105,17 @@ class EpisodeShotBlueprint(BaseModel):
     characters: list[str] = []
     shotType: str
     visualPromptEnglish: str
+    # These are deliberately explicit. CINEMIND renders the boundary frames first,
+    # then every Veo shot uses a start+end frame. That lets shots render in parallel
+    # while sharing exact boundaries with adjacent shots.
+    startFramePromptEnglish: str
+    endFramePromptEnglish: str
     narration: str = ""
     dialogue: str = ""
     dialogueSpeaker: str = ""
     subtitle: str = ""
     continuityAnchor: str
+
 
 class EpisodeRenderPlan(BaseModel):
     episodeTitle: str
@@ -111,9 +128,26 @@ class EpisodeRenderPlan(BaseModel):
     summary: str
     shots: list[EpisodeShotBlueprint]
 
+
 class EpisodeRenderRequest(BaseModel):
     title: dict
     episodeId: str | None = None
     locale: str = "en-US"
-    targetSeconds: int = Field(default=48, ge=24, le=96)
+    targetSeconds: int = Field(default=48, ge=24, le=1800)
     includeNarration: bool = True
+
+
+class ProductionJobRequest(EpisodeRenderRequest):
+    qualityMode: Literal["fast", "balanced", "strict"] = "balanced"
+
+
+class QualityGateReport(BaseModel):
+    passed: bool
+    narrativeCoherence: int = Field(ge=0, le=100)
+    visualContinuity: int = Field(ge=0, le=100)
+    realism: int = Field(ge=0, le=100)
+    openingClarity: int = Field(ge=0, le=100)
+    languageConsistency: int = Field(ge=0, le=100)
+    badShotNumbers: list[int] = []
+    summary: str = ""
+    repairInstructions: list[str] = []
