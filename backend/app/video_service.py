@@ -286,8 +286,9 @@ class VideoService:
 
         raise RuntimeError(
             "VEO_QUOTA_EXHAUSTED: Vertex AI kept rejecting long-running Veo operations after "
-            f"{settings.veo_submit_retry_attempts} adaptive attempts. Completed shots in this job were preserved in memory, "
-            "but the remaining shot could not obtain an LRO quota slot. Reduce VEO_LRO_MAX_INFLIGHT or request a quota increase. "
+            f"{settings.veo_submit_retry_attempts} adaptive attempts. Some already-finished Veo objects may remain in GCS, "
+            "but this job cannot assemble a complete master until the missing shot obtains an LRO slot. "
+            "Reduce VEO_LRO_MAX_INFLIGHT or request a quota increase. "
             f"Last error: {last_quota_error}"
         )
 
