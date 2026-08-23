@@ -35,6 +35,7 @@ class CharacterBlueprint(BaseModel):
     name: str
     role: str
     visualDescriptor: str
+    voiceDescriptor: str = "natural adult voice, restrained premium-drama delivery"
     motivation: str
     relationships: list[str] = []
     knowledgeState: str
