@@ -35,9 +35,6 @@ def _spoken_language(locale: str) -> str:
 class VideoService:
     def __init__(self) -> None:
         self._client = None
-        # Worker parallelism and Vertex long-running-operation quota are different
-        # resources. Keep a central adaptive gate across every render thread so a
-        # burst of prepared shots cannot exceed the base-model LRO quota.
         self._quota_condition = threading.Condition()
         self._active_lros = 0
         self._adaptive_lro_limit = settings.veo_lro_max_inflight
@@ -53,6 +50,10 @@ class VideoService:
     def _is_veo3(model: str) -> bool:
         lowered = (model or "").lower()
         return lowered.startswith("veo-3.") or lowered.startswith("veo-3-")
+
+    @staticmethod
+    def _is_veo31_lite(model: str) -> bool:
+        return "veo-3.1-lite" in (model or "").lower()
 
     @staticmethod
     def _is_quota_error(exc: object) -> bool:
@@ -74,27 +75,25 @@ class VideoService:
         first_frame_uri: str = "",
         reference_count: int = 0,
     ) -> None:
-        """Fail locally before any Vertex request when a known Veo contract is invalid.
-
-        Google documents that Veo 3/3.1 prompt rewriting cannot be disabled. The
-        service therefore never sends enhance_prompt=False for those models. This
-        validator also enforces the duration/reference-image constraints used by
-        CINEMIND so an invalid request cannot consume an LRO slot.
-        """
+        """Zero-spend validator for the documented Veo request contract."""
         errors: list[str] = []
         duration = int(config_kwargs.get("duration_seconds", settings.veo_duration_seconds))
+        count = int(config_kwargs.get("number_of_videos", 1))
+
         if duration not in {4, 6, 8}:
             errors.append(f"duration_seconds={duration} is invalid for Veo 3.x; use 4, 6, or 8")
-
+        if not 1 <= count <= 4:
+            errors.append(f"number_of_videos={count} is outside Veo's supported 1..4 range")
+        if cls._is_veo3(model) and settings.video_location != "us-central1":
+            errors.append(f"Veo 3.1 is configured for unsupported region {settings.video_location!r}; use us-central1")
         if cls._is_veo3(model) and config_kwargs.get("enhance_prompt") is False:
             errors.append("Veo 3/3.1 prompt enhancement cannot be disabled; omit enhance_prompt or leave it enabled")
-
+        if cls._is_veo31_lite(model) and reference_count:
+            errors.append("veo-3.1-lite-generate-001 does not support asset reference_images; use first/last-frame mode")
         if reference_count and duration != 8:
             errors.append("reference-image generation requires an 8-second Veo clip in the CINEMIND pipeline")
-
         if first_frame_uri and reference_count:
             errors.append("CINEMIND does not combine first-frame mode with asset reference_images in one Veo request")
-
         if config_kwargs.get("aspect_ratio") not in {"16:9", "9:16"}:
             errors.append("unsupported Veo aspect ratio")
 
@@ -102,30 +101,64 @@ class VideoService:
             raise RuntimeError("VEO_CONTRACT_PREFLIGHT_FAILED: " + "; ".join(errors))
 
     def contract_status(self) -> dict:
-        """Zero-spend health status for the request contract CINEMIND will use."""
+        """Validate representative production requests without network or Veo spend."""
         checks: dict[str, dict] = {}
-        for label, model in (
-            ("visual", settings.veo_visual_model),
-            ("audio", settings.veo_audio_model),
-        ):
-            config_kwargs = {
-                "number_of_videos": 1,
-                "duration_seconds": settings.veo_duration_seconds,
-                "aspect_ratio": "16:9",
-                "output_gcs_uri": settings.video_gcs_uri or "gs://preflight-only/",
+
+        # Visual path: Fast/Generate uses asset references. Reference-image mode is
+        # locked to 8 seconds by CINEMIND regardless of the user-selected master duration.
+        visual_config = {
+            "number_of_videos": 1,
+            "duration_seconds": 8,
+            "aspect_ratio": "16:9",
+            "output_gcs_uri": settings.video_gcs_uri or "gs://preflight-only/",
+            "reference_images": [
+                types.VideoGenerationReferenceImage(
+                    image=types.Image(gcs_uri="gs://preflight-only/identity.png", mime_type="image/png"),
+                    reference_type="asset",
+                )
+            ],
+        }
+        try:
+            self._validate_request_contract(
+                model=settings.veo_visual_model,
+                config_kwargs=visual_config,
+                reference_count=1,
+            )
+            types.GenerateVideosConfig(**visual_config)
+            checks["visual"] = {
+                "ok": True,
+                "model": settings.veo_visual_model,
+                "mode": "asset-reference",
+                "promptEnhancement": "managed-by-veo" if self._is_veo3(settings.veo_visual_model) else "default",
             }
-            try:
-                self._validate_request_contract(model=model, config_kwargs=config_kwargs)
-                # SDK-level schema construction catches renamed/removed fields
-                # without making a network request or spending Veo quota.
-                types.GenerateVideosConfig(**config_kwargs)
-                checks[label] = {
-                    "ok": True,
-                    "model": model,
-                    "promptEnhancement": "managed-by-veo" if self._is_veo3(model) else "default",
-                }
-            except Exception as exc:
-                checks[label] = {"ok": False, "model": model, "error": str(exc)}
+        except Exception as exc:
+            checks["visual"] = {"ok": False, "model": settings.veo_visual_model, "error": str(exc)}
+
+        # Episode/audio path: Lite supports native sound and first+last-frame mode,
+        # but does not support asset reference_images. This mirrors the real renderer.
+        audio_config = {
+            "number_of_videos": 1,
+            "duration_seconds": settings.veo_duration_seconds,
+            "aspect_ratio": "16:9",
+            "output_gcs_uri": settings.video_gcs_uri or "gs://preflight-only/",
+            "last_frame": types.Image(gcs_uri="gs://preflight-only/end.png", mime_type="image/png"),
+        }
+        try:
+            self._validate_request_contract(
+                model=settings.veo_audio_model,
+                config_kwargs=audio_config,
+                first_frame_uri="gs://preflight-only/start.png",
+                reference_count=0,
+            )
+            types.GenerateVideosConfig(**audio_config)
+            checks["audio"] = {
+                "ok": True,
+                "model": settings.veo_audio_model,
+                "mode": "first-last-frame-native-audio",
+                "promptEnhancement": "managed-by-veo" if self._is_veo3(settings.veo_audio_model) else "default",
+            }
+        except Exception as exc:
+            checks["audio"] = {"ok": False, "model": settings.veo_audio_model, "error": str(exc)}
 
         return {
             "ok": all(item.get("ok") for item in checks.values()),
@@ -258,9 +291,8 @@ class VideoService:
         config_kwargs: dict = {
             "number_of_videos": 1,
             "duration_seconds": settings.veo_duration_seconds,
-            # IMPORTANT: Veo 3/3.1 does not permit disabling prompt enhancement.
-            # Do not send enhance_prompt=False. Omitting it leaves Google's required
-            # prompt rewriter enabled and avoids a deterministic server-side failure.
+            # Veo 3/3.1 prompt enhancement is mandatory. Omitting this field lets
+            # Google's required prompt rewriter stay enabled.
             "aspect_ratio": "16:9",
             "output_gcs_uri": settings.video_gcs_uri,
         }
@@ -284,7 +316,6 @@ class VideoService:
                 config_kwargs["duration_seconds"] = 8
                 config_kwargs["reference_images"] = refs
 
-        # Zero-spend local gate before acquiring an LRO slot or making any request.
         self._validate_request_contract(
             model=selected_model,
             config_kwargs=config_kwargs,
