@@ -3,11 +3,13 @@ import base64
 import logging
 import re
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from google.cloud import storage
 from .config import settings
 from .gemini_service import studio
 
 log = logging.getLogger(__name__)
+
 
 class ReferenceService:
     def _upload_data_url(self, data_url: str, label: str) -> str:
@@ -22,67 +24,106 @@ class ReferenceService:
         bucket_name, _, base_prefix = prefix.partition("/")
         ext = "png" if "png" in mime_type else "jpg"
         safe = re.sub(r"[^a-zA-Z0-9_-]+", "-", label).strip("-").lower() or "reference"
-        object_name = "/".join(x for x in [base_prefix.rstrip('/'), "references", f"{safe}-{uuid.uuid4().hex[:8]}.{ext}"] if x)
+        object_name = "/".join(x for x in [base_prefix.rstrip('/'), "reality-pack", f"{safe}-{uuid.uuid4().hex[:8]}.{ext}"] if x)
         blob = storage.Client(project=settings.project).bucket(bucket_name).blob(object_name)
         blob.upload_from_string(raw, content_type=mime_type)
         return f"gs://{bucket_name}/{object_name}"
 
-    def build_for_title(self, title: dict) -> list[str]:
-        """Build a quota-efficient continuity lock for Veo.
+    @staticmethod
+    def _character_prompt(character: dict) -> str:
+        return (
+            "LIVE-ACTION PHOTOREALISTIC CAST REFERENCE. This is a neutral production identity photograph, NOT a poster, "
+            "not concept art, not fashion advertising, not CGI. One original fictional adult person only. "
+            f"Character: {character.get('name')}. Role: {character.get('role')}. "
+            f"Canonical physical identity: {character.get('visualDescriptor')}. "
+            "Three-quarter body reference with face clearly visible, relaxed neutral expression, natural skin texture with pores and small imperfections, "
+            "physically plausible anatomy, realistic hair strands, exact practical wardrobe, neutral daylight-balanced soft illumination, 50mm documentary lens, "
+            "minimal color grade, ordinary believable background, no beauty filter, no glamour pose, no text, no logos, no extra people, no real actor likeness."
+        )
 
-        Reuse the key art that CINEMIND already generated before video production:
-        poster = protagonist identity anchor, backdrop = primary-location anchor.
-        Only attempt an additional dedicated character image if quota allows.
-        Production fails closed if fewer than two useful anchors exist.
+    @staticmethod
+    def _environment_prompt(title: dict) -> str:
+        meta = title.get("_cinemind", {}) or {}
+        first_episode = (title.get("episodes") or [{}])[0]
+        return (
+            "LIVE-ACTION PHOTOREALISTIC LOCATION REFERENCE for a grounded premium television production. "
+            "This must look like a real place a film crew could physically enter, NOT concept art, not a game environment, not glossy sci-fi CGI. "
+            f"Series premise: {title.get('synopsis', '')}. "
+            f"Episode director notes: {first_episode.get('directorNotes', '')}. "
+            f"Location design brief: {meta.get('backdropPrompt', '')}. "
+            "Wide eye-level production still, 28mm lens, plausible architecture and object placement, practical lighting, real-world materials with wear, "
+            "subtle clutter appropriate to the location, physically correct reflections and shadows, restrained color grade, no people, no text, no logos."
+        )
+
+    def build_for_title(self, title: dict) -> list[str]:
+        """Create a dedicated photoreal Reality Pack for continuity.
+
+        Do not reuse marketing artwork as character identity. Generate neutral cast and
+        location references, because neutral references preserve identity and realism
+        much better across changes in angle, action and lighting.
         """
         if not settings.enable_images or not settings.video_gcs_uri:
             raise RuntimeError("Continuity Lock requires image generation and a writable GCS media bucket")
 
-        refs: list[str] = []
         cast = title.get("cast", []) or []
+        if not cast:
+            raise RuntimeError("CONTINUITY_LOCK_UNAVAILABLE: title has no locked cast")
         meta = title.get("_cinemind", {}) or {}
 
-        # 1) Reuse already-generated protagonist-oriented poster.
-        poster_uri = self._upload_data_url(title.get("posterUrl", ""), "protagonist-master")
-        if poster_uri:
-            refs.append(poster_uri)
-            if cast:
-                cast[0]["referenceImageUri"] = poster_uri
-            meta["protagonistReferenceUri"] = poster_uri
+        requests: list[tuple[str, str, str, dict | None]] = []
+        # Two principals + one environment fit Veo's three-reference budget.
+        for index, character in enumerate(cast[:2]):
+            requests.append((f"character-{index}", self._character_prompt(character), "3:4", character))
+        requests.append(("primary-location", self._environment_prompt(title), "16:9", None))
 
-        # 2) Reuse already-generated location/style backdrop.
-        backdrop_uri = self._upload_data_url(title.get("backdropUrl", ""), "location-master")
-        if backdrop_uri and backdrop_uri not in refs:
-            refs.append(backdrop_uri)
-            meta["locationReferenceUri"] = backdrop_uri
+        generated: dict[str, str] = {}
+        # Gemini image generation usually takes seconds. Running the three independent
+        # Reality Pack requests concurrently removes a large serial startup penalty.
+        with ThreadPoolExecutor(max_workers=min(3, len(requests))) as pool:
+            futures = {
+                pool.submit(studio.generate_image_data_url, prompt, aspect): (label, character)
+                for label, prompt, aspect, character in requests
+            }
+            for future in as_completed(futures):
+                label, character = futures[future]
+                try:
+                    data_url = future.result()
+                    uri = self._upload_data_url(data_url, label)
+                except Exception as exc:
+                    log.warning("Reality Pack generation failed for %s: %s", label, exc)
+                    uri = ""
+                if uri:
+                    generated[label] = uri
+                    if character is not None:
+                        character["referenceImageUri"] = uri
 
-        # 3) Optional second speaking character. This is the only extra image request
-        # during continuity setup, avoiding the 3-request burst that exhausted quota.
-        if len(refs) < 3 and len(cast) > 1:
-            character = cast[1]
-            prompt = (
-                "Original fictional adult character identity reference for a premium scripted television series. "
-                f"Character name: {character.get('name')}. Role: {character.get('role')}. "
-                f"Canonical appearance: {character.get('visualDescriptor')}. "
-                "Clear face, three-quarter body, exact stable wardrobe, neutral practical lighting, realistic production reference. "
-                "No text, logos, real actor likeness, franchise resemblance, montage, or extra people."
-            )
-            data_url = studio.generate_image_data_url(prompt, "16:9")
-            uri = self._upload_data_url(data_url, f"character-{character.get('name','second-lead')}")
+        refs: list[str] = []
+        for index in range(min(2, len(cast))):
+            uri = generated.get(f"character-{index}", "")
             if uri:
                 refs.append(uri)
-                character["referenceImageUri"] = uri
+        location_uri = generated.get("primary-location", "")
+        if location_uri:
+            refs.append(location_uri)
+            meta["locationReferenceUri"] = location_uri
 
+        if refs:
+            meta["protagonistReferenceUri"] = refs[0]
+        meta["realityPack"] = {
+            "characterReferences": [x for x in refs if x != location_uri],
+            "locationReference": location_uri,
+            "photorealistic": True,
+        }
         title["_cinemind"] = meta
         refs = refs[:3]
-        log.info("Continuity lock created %d Veo asset references", len(refs))
+        log.info("Reality Pack created %d continuity references", len(refs))
 
         if len(refs) < 2:
             raise RuntimeError(
-                "CONTINUITY_LOCK_UNAVAILABLE: fewer than two visual anchors were available. "
-                "CINEMIND will not spend Veo credits on an identity-unstable production. "
-                "Wait for Gemini image quota to recover and retry."
+                "CONTINUITY_LOCK_UNAVAILABLE: fewer than two dedicated Reality Pack anchors were available. "
+                "CINEMIND will not spend Veo credits on an identity-unstable production."
             )
         return refs
+
 
 references = ReferenceService()
