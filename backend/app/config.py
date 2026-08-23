@@ -34,6 +34,14 @@ class Settings:
     text_model: str = os.getenv("GEMINI_TEXT_MODEL", "gemini-3.6-flash")
     quality_model: str = os.getenv("GEMINI_QUALITY_MODEL", "gemini-3.5-flash")
     image_model: str = os.getenv("GEMINI_IMAGE_MODEL", "gemini-3.1-flash-image")
+    image_fallback_model: str = os.getenv("GEMINI_IMAGE_FALLBACK_MODEL", "gemini-2.5-flash-image")
+    # Image generation is intentionally throttled separately from Veo. Keyframes
+    # are quick compared with video, and bursting them caused Vertex 429s.
+    image_max_concurrency: int = bounded_int("GEMINI_IMAGE_MAX_CONCURRENCY", 1, 1, 4)
+    image_retry_attempts: int = bounded_int("GEMINI_IMAGE_RETRY_ATTEMPTS", 5, 1, 8)
+    image_retry_base_seconds: int = bounded_int("GEMINI_IMAGE_RETRY_BASE_SECONDS", 4, 1, 30)
+    image_retry_max_seconds: int = bounded_int("GEMINI_IMAGE_RETRY_MAX_SECONDS", 45, 5, 120)
+
     tts_model: str = os.getenv("GEMINI_TTS_MODEL", "gemini-2.5-flash-tts")
     tts_voice: str = os.getenv("GEMINI_TTS_VOICE", "Kore")
     enable_tts: bool = truthy("CINEMIND_ENABLE_TTS", False)
