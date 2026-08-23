@@ -45,3 +45,18 @@ jobs:
         env:
           PYTHONPATH: backend
         run: python -c "import app.main; print('CINEMIND backend import OK')"
+
+      - name: Cast speaker contract regression
+        env:
+          PYTHONPATH: backend
+        run: |
+          python - <<'PY'
+          from app.episode_render import _resolve_cast_name
+
+          cast = ["Vespera Thorne", "Maya Solis"]
+          assert _resolve_cast_name("Dra. Vespera Thorne", cast, ["Vespera Thorne"]) == "Vespera Thorne"
+          assert _resolve_cast_name("DR VESPERA THORNE", cast, ["Vespera Thorne"]) == "Vespera Thorne"
+          assert _resolve_cast_name("Vespera Thorne, Dra.", cast, ["Vespera Thorne"]) == "Vespera Thorne"
+          assert _resolve_cast_name("persona desconocida", cast, ["Vespera Thorne", "Maya Solis"]) == ""
+          print("Cast speaker contract OK")
+          PY
