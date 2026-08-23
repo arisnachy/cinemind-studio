@@ -38,8 +38,14 @@ def health():
         except Exception:
             clickhouse_ok = False
     composer_status = composer.preflight()
+    veo_contract = videos.contract_status()
+    runtime_ok = bool(
+        studio.ready
+        and composer_status.get("available", False)
+        and (not settings.enable_video or veo_contract.get("ok", False))
+    )
     return {
-        "ok": True,
+        "ok": runtime_ok,
         "gemini": studio.ready,
         "geminiModel": settings.text_model,
         "qualityModel": settings.quality_model,
@@ -54,6 +60,7 @@ def health():
         "veoMaxConcurrency": settings.veo_max_concurrency,
         "veoLroMaxInflight": settings.veo_lro_max_inflight,
         "veoQuotaController": videos.quota_status(),
+        "veoRequestContract": veo_contract,
         "veoPollSeconds": settings.veo_poll_seconds,
         "ttsGeneration": settings.enable_tts,
         "syncPreviewMaxSeconds": settings.sync_preview_max_seconds,
@@ -78,6 +85,20 @@ async def generate(req: GenerateTitleRequest):
         raise HTTPException(503, detail={"phase": "preflight", "error": "Google Cloud is not configured"})
     if req.pilotSeconds > settings.long_form_max_seconds:
         raise HTTPException(400, detail={"phase": "preflight", "error": f"Requested duration exceeds {settings.long_form_max_seconds}s long-form limit"})
+
+    # Zero-spend Veo request-schema gate. If our runtime configuration violates a
+    # documented Veo contract, fail before blueprint images, storyboard or video.
+    if req.autoProducePilot and settings.enable_video:
+        veo_contract = videos.contract_status()
+        if not veo_contract.get("ok", False):
+            raise HTTPException(
+                503,
+                detail={
+                    "phase": "preflight",
+                    "error": "Veo request contract is invalid; production blocked before media spend",
+                    "veoRequestContract": veo_contract,
+                },
+            )
 
     phase = "blueprint"
     try:
