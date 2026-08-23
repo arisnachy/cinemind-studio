@@ -60,3 +60,23 @@ jobs:
           assert _resolve_cast_name("persona desconocida", cast, ["Vespera Thorne", "Maya Solis"]) == ""
           print("Cast speaker contract OK")
           PY
+
+      - name: Veo LRO quota controller regression
+        env:
+          PYTHONPATH: backend
+          VEO_LRO_MAX_INFLIGHT: '2'
+        run: |
+          python - <<'PY'
+          from app.video_service import VideoService
+
+          service = VideoService()
+          quota_error = Exception("429 RESOURCE_EXHAUSTED long_running_online_prediction_requests_per_base_model")
+          assert service._is_quota_error(quota_error)
+          assert service.quota_status()["adaptiveLroLimit"] == 2
+          service._active_lros = 1
+          service._penalize_quota(0.01, "veo-test")
+          status = service.quota_status()
+          assert status["adaptiveLroLimit"] == 1
+          assert status["activeLros"] == 0
+          print("Veo LRO quota controller OK")
+          PY
