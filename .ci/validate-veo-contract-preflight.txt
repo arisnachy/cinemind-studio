@@ -1,0 +1,1 @@
+CI-only marker to validate the current main tree with Veo 3.1 request-contract preflight. Do not merge.
