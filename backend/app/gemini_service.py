@@ -1,6 +1,8 @@
 from __future__ import annotations
 import base64
 import logging
+import random
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -123,38 +125,79 @@ posterPrompt, teaserPrompt. Do not use markdown fences.
             errors.append(f"fallback: {exc.__class__.__name__}: {exc}")
             raise RuntimeError("Blueprint generation failed after retries. " + " | ".join(errors)) from exc
 
+    @staticmethod
+    def _is_quota_error(exc: Exception) -> bool:
+        text = str(exc).upper()
+        code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+        return code == 429 or "429" in text or "RESOURCE_EXHAUSTED" in text
+
     def generate_image_data_url(self, prompt: str, aspect_ratio: str) -> str:
         if not settings.enable_images:
             return ""
-        try:
-            response = self.client().models.generate_content(
-                model=settings.image_model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_modalities=["IMAGE"],
-                    image_config=types.ImageConfig(aspect_ratio=aspect_ratio),
-                ),
-            )
-            for candidate in response.candidates or []:
-                if not candidate.content:
-                    continue
-                for part in candidate.content.parts or []:
-                    if part.inline_data and part.inline_data.data:
-                        mime = part.inline_data.mime_type or "image/png"
-                        raw = part.inline_data.data
-                        encoded = base64.b64encode(raw).decode("ascii") if isinstance(raw, bytes) else str(raw)
-                        return f"data:{mime};base64,{encoded}"
-        except Exception as exc:
-            log.warning("Gemini image generation failed: %s", exc)
+
+        models = [settings.image_model]
+        if settings.image_fallback_model and settings.image_fallback_model not in models:
+            models.append(settings.image_fallback_model)
+
+        last_error: Exception | None = None
+        for attempt in range(1, settings.image_retry_attempts + 1):
+            quota_seen = False
+            for model in models:
+                try:
+                    response = self.client().models.generate_content(
+                        model=model,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            response_modalities=["IMAGE"],
+                            image_config=types.ImageConfig(aspect_ratio=aspect_ratio),
+                        ),
+                    )
+                    for candidate in response.candidates or []:
+                        if not candidate.content:
+                            continue
+                        for part in candidate.content.parts or []:
+                            if part.inline_data and part.inline_data.data:
+                                mime = part.inline_data.mime_type or "image/png"
+                                raw = part.inline_data.data
+                                encoded = base64.b64encode(raw).decode("ascii") if isinstance(raw, bytes) else str(raw)
+                                return f"data:{mime};base64,{encoded}"
+                    last_error = RuntimeError(f"Image model {model} returned no image")
+                except Exception as exc:
+                    last_error = exc
+                    if self._is_quota_error(exc):
+                        quota_seen = True
+                        log.warning(
+                            "Gemini image quota hit on %s (attempt %d/%d)",
+                            model,
+                            attempt,
+                            settings.image_retry_attempts,
+                        )
+                    else:
+                        log.warning("Gemini image generation failed on %s: %s", model, exc)
+
+            if attempt < settings.image_retry_attempts:
+                base = min(
+                    settings.image_retry_max_seconds,
+                    settings.image_retry_base_seconds * (2 ** (attempt - 1)),
+                )
+                delay = base + random.uniform(0.0, max(1.0, base * 0.35))
+                log.info(
+                    "Waiting %.1fs before Gemini image retry (%s)",
+                    delay,
+                    "quota recovery" if quota_seen else "model fallback",
+                )
+                time.sleep(delay)
+
+        log.warning("Gemini image generation exhausted retries: %s", last_error)
         return ""
 
     def to_title(self, req: GenerateTitleRequest, bp: StudioBlueprint) -> dict:
         generated_id = f"title-{uuid.uuid4().hex[:12]}"
         universe_id = req.universeId if req.universeId and req.universeId != "new" else f"univ-{uuid.uuid4().hex[:10]}"
 
-        # Marketing art is independent and can be generated concurrently. Reality
-        # Pack identity references are created separately immediately before video.
-        with ThreadPoolExecutor(max_workers=2) as pool:
+        # Marketing art is low priority. Use the same quota-aware image lane instead
+        # of bursting poster + backdrop concurrently and starving the Reality Pack.
+        with ThreadPoolExecutor(max_workers=min(settings.image_max_concurrency, 2)) as pool:
             backdrop_future = pool.submit(self.generate_image_data_url, bp.backdropPrompt, "16:9")
             poster_future = pool.submit(self.generate_image_data_url, bp.posterPrompt, "3:4")
             backdrop = backdrop_future.result()
