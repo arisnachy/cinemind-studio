@@ -25,6 +25,7 @@ export interface Character {
   name: string;
   role: string;
   visualDescriptor: string;
+  voiceDescriptor?: string;
   motivation: string;
   relationships: string[];
   knowledgeState: string;
@@ -94,14 +95,32 @@ export interface ProductionSegment {
   narration: string;
   dialogue: string;
   dialogueSpeaker?: string;
-  narrationUrl?: string;
-  narrationUri?: string;
-  narrationModel?: string;
-  narrationVoice?: string;
   continuityAnchor: string;
-  referenceCount?: number;
-  firstFrameApplied?: boolean;
+  firstFrameUri?: string;
   lastFrameUri?: string;
+  firstFrameApplied?: boolean;
+  lastFrameApplied?: boolean;
+  model?: string;
+  audioMode?: string;
+}
+
+export interface ProductionProgress {
+  stage: string;
+  completed: number;
+  total: number;
+  percent: number;
+  message: string;
+}
+
+export interface ProductionQualityGate {
+  passed?: boolean;
+  narrativeCoherence?: number;
+  visualContinuity?: number;
+  realism?: number;
+  openingClarity?: number;
+  languageConsistency?: number;
+  badShotNumbers?: number[];
+  summary?: string;
 }
 
 export interface Title {
@@ -137,18 +156,26 @@ export interface Title {
   canonStatus: 'Canonical' | 'Alternate Timeline' | 'Evolving';
   hasGeneratedVideo?: boolean;
   videoPreviewUrl?: string;
-  productionStatus?: 'WRITING' | 'RENDERING' | 'READY' | 'FAILED';
+  productionStatus?: 'WRITING' | 'QUEUED' | 'RUNNING' | 'RENDERING' | 'READY' | 'FAILED';
+  productionJobId?: string;
+  productionTargetSeconds?: number;
+  productionProgress?: ProductionProgress;
   productionSegments?: ProductionSegment[];
   productionPlaybackUrl?: string;
   productionVideoUri?: string;
   productionComposition?: string;
   productionSummary?: string;
   productionLogline?: string;
+  productionQualityGate?: ProductionQualityGate;
   productionContinuityLock?: {
     enabled?: boolean;
     referenceImages?: number;
-    sameSceneFirstFrameHandoff?: boolean;
+    sharedStoryboardBoundaries?: number;
+    firstAndLastFrame?: boolean;
+    parallelShotRendering?: boolean;
+    parallelism?: number;
     singleMasterPlayback?: boolean;
+    nativeVeoAudio?: boolean;
   };
   productionError?: string;
 }
