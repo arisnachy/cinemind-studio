@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { X, Sparkles, Film, Tv, Database, Compass, ShieldCheck, Image, Mic2, Clapperboard, CheckCircle2, AlertTriangle, Timer } from 'lucide-react';
+import { X, Sparkles, Film, Tv, Database, Compass, ShieldCheck, Image, Volume2, Clapperboard, CheckCircle2, AlertTriangle, Timer } from 'lucide-react';
 import { TasteProfile, Title, Universe } from '../../types/content';
 import { studioApi } from '../../services/api';
 import { getPreferredLocale } from '../../utils/locale';
@@ -14,12 +14,12 @@ interface CreateStudioModalProps {
 
 const PIPELINE = [
   { label: 'Story architecture & canon', icon: Compass },
-  { label: 'Characters & season bible', icon: Sparkles },
-  { label: 'Episode screenplay & dramatic beats', icon: Film },
+  { label: 'Characters, voice bible & season bible', icon: Sparkles },
+  { label: 'Pilot cold-open screenplay', icon: Film },
   { label: 'Character/location reference lock', icon: Image },
   { label: 'Continuity validation', icon: ShieldCheck },
-  { label: 'Veo cinematic shot production', icon: Clapperboard },
-  { label: 'Gemini-TTS dialogue & narration', icon: Mic2 },
+  { label: 'Veo cinematic picture + native dialogue', icon: Volume2 },
+  { label: 'First-frame continuity handoff', icon: Clapperboard },
   { label: 'Composing continuous master cut', icon: CheckCircle2 },
 ];
 
@@ -35,7 +35,7 @@ export const CreateStudioModal: React.FC<CreateStudioModalProps> = ({ isOpen, on
   const [selectedMood, setSelectedMood] = useState('Atmospheric & Suspenseful');
   const [format, setFormat] = useState<'series' | 'movie'>('series');
   const [intensity, setIntensity] = useState(85);
-  const [durationSeconds, setDurationSeconds] = useState(24);
+  const [durationSeconds, setDurationSeconds] = useState(48);
   const [isGenerating, setIsGenerating] = useState(false);
   const [stage, setStage] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -54,14 +54,12 @@ export const CreateStudioModal: React.FC<CreateStudioModalProps> = ({ isOpen, on
   if (!isOpen) return null;
 
   const StageIcon = PIPELINE[stage]?.icon ?? Clapperboard;
-  const stageLabel = PIPELINE[stage]?.label ?? 'Producing cinematic episode';
+  const stageLabel = PIPELINE[stage]?.label ?? 'Producing cinematic opening';
 
   const start = async (autonomous = false) => {
     setIsGenerating(true);
     setStage(0);
     setError(null);
-    // Activity indicator only. READY is not granted until the backend returns a
-    // single composed master file, not a loose playlist of Veo clips.
     const ticker = window.setInterval(() => setStage((s) => (s + 1) % PIPELINE.length), 9000);
     try {
       const newTitle = await studioApi.generateTitle({
@@ -92,12 +90,14 @@ export const CreateStudioModal: React.FC<CreateStudioModalProps> = ({ isOpen, on
     }
   };
 
+  const durationLabel = durationSeconds === 24 ? 'Teaser cold open' : durationSeconds >= 48 ? 'Pilot-style opening' : 'Opening';
+
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-black/90 backdrop-blur-md flex items-center justify-center p-4">
       <div className="fixed inset-0" onClick={() => !isGenerating && onClose()} />
       <div className="relative z-10 w-full max-w-3xl rounded-2xl bg-[#0e0e17] border border-purple-500/30 shadow-2xl p-6 sm:p-8 space-y-6">
         <div className="flex items-center justify-between border-b border-white/10 pb-4">
-          <div><h2 className="text-2xl font-black text-white">CINEMIND DIRECTOR STUDIO</h2><p className="text-xs text-purple-300 mt-1">One request → story → continuity lock → composed master → Play.</p></div>
+          <div><h2 className="text-2xl font-black text-white">CINEMIND DIRECTOR STUDIO</h2><p className="text-xs text-purple-300 mt-1">One request → true cold open → locked characters → native Veo dialogue → one master → Play.</p></div>
           {!isGenerating && <button onClick={onClose} className="p-2 rounded-full bg-white/10 text-white"><X className="w-5 h-5" /></button>}
         </div>
 
@@ -105,7 +105,7 @@ export const CreateStudioModal: React.FC<CreateStudioModalProps> = ({ isOpen, on
 
         {!isGenerating ? <>
           <div className="rounded-xl bg-gradient-to-r from-purple-950/60 via-pink-950/30 to-black border border-purple-500/30 p-4 flex flex-col sm:flex-row gap-4 justify-between">
-            <div><span className="text-[10px] uppercase tracking-wider text-purple-300">Autonomous Showrunner</span><h4 className="font-bold mt-1">Create a complete original production from my taste</h4><p className="text-xs text-gray-400 mt-1">You choose the final master duration. CINEMIND plans the required Veo shots automatically.</p></div>
+            <div><span className="text-[10px] uppercase tracking-wider text-purple-300">Autonomous Showrunner</span><h4 className="font-bold mt-1">Create a complete original production from my taste</h4><p className="text-xs text-gray-400 mt-1">The opening begins at the beginning: place → protagonist → normal objective → incident → reaction → hook.</p></div>
             <button onClick={() => start(true)} className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-purple-600 to-pink-600 font-bold text-sm">Auto Produce</button>
           </div>
 
@@ -121,24 +121,25 @@ export const CreateStudioModal: React.FC<CreateStudioModalProps> = ({ isOpen, on
 
           <div className="rounded-xl bg-white/5 border border-white/10 p-4 space-y-3">
             <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2"><Timer className="w-4 h-4 text-purple-300"/><div><p className="text-xs font-semibold text-white">Video duration</p><p className="text-[10px] text-gray-500">Choose the master-cut duration before production.</p></div></div>
-              <div className="text-right"><p className="text-lg font-black text-white">{durationSeconds}s</p><p className="text-[10px] text-purple-300">≈ {shotCount} Veo shots</p></div>
+              <div className="flex items-center gap-2"><Timer className="w-4 h-4 text-purple-300"/><div><p className="text-xs font-semibold text-white">Video duration</p><p className="text-[10px] text-gray-500">You choose the master-cut duration before production.</p></div></div>
+              <div className="text-right"><p className="text-lg font-black text-white">{durationSeconds}s</p><p className="text-[10px] text-purple-300">{durationLabel} · ≈ {shotCount} Veo shots</p></div>
             </div>
             <div className="grid grid-cols-4 gap-2">
               {DURATION_PRESETS.map((seconds) => <button key={seconds} type="button" onClick={()=>setDurationSeconds(seconds)} className={`rounded-lg py-2 text-xs font-semibold ${durationSeconds===seconds?'bg-purple-600 text-white':'bg-white/5 text-gray-300 hover:bg-white/10'}`}>{seconds}s</button>)}
             </div>
             <input type="range" min={MIN_DURATION_SECONDS} max={MAX_DURATION_SECONDS} step={SHOT_SECONDS} value={durationSeconds} onChange={(e)=>setDurationSeconds(Number(e.target.value))} className="w-full accent-purple-500"/>
-            <div className="flex justify-between text-[10px] text-gray-500"><span>{MIN_DURATION_SECONDS}s</span><span>Rendered as one continuous ≈ {effectiveDuration}s master</span><span>{MAX_DURATION_SECONDS}s</span></div>
-            <p className="text-[10px] text-amber-300/80">Longer duration means more Veo generations and longer production time. Current synchronous prototype limit: {MAX_DURATION_SECONDS} seconds.</p>
+            <div className="flex justify-between text-[10px] text-gray-500"><span>{MIN_DURATION_SECONDS}s</span><span>One continuous ≈ {effectiveDuration}s master</span><span>{MAX_DURATION_SECONDS}s</span></div>
+            {durationSeconds < 48 && <p className="text-[10px] text-amber-300">24 seconds can prove continuity, but 48 seconds or more is recommended when you want the result to feel like a genuine series opening rather than a teaser.</p>}
+            <p className="text-[10px] text-amber-300/70">Longer duration means more Veo generations and longer production time. Current synchronous prototype limit: {MAX_DURATION_SECONDS} seconds.</p>
           </div>
 
-          <div className="rounded-xl bg-white/5 border border-white/10 p-3 text-[11px] text-gray-300 flex gap-2"><Database className="w-4 h-4 text-purple-300 shrink-0"/><span>Language: <b>{getPreferredLocale()}</b>. CINEMIND does not publish until the voice mix and continuous master are ready.</span></div>
+          <div className="rounded-xl bg-white/5 border border-white/10 p-3 text-[11px] text-gray-300 flex gap-2"><Database className="w-4 h-4 text-purple-300 shrink-0"/><span>Language: <b>{getPreferredLocale()}</b>. Spoken performance is generated natively by Veo in the same pass as the actor and lip movement; no external TTS is overlaid.</span></div>
           <div className="flex justify-end"><button onClick={()=>start(false)} disabled={!prompt.trim()} className="px-8 py-3 rounded-xl bg-gradient-to-r from-purple-600 to-pink-600 font-bold disabled:opacity-40"><span className="flex items-center gap-2"><Sparkles className="w-4 h-4"/>Generate & Produce · {durationSeconds}s</span></button></div>
         </> : <div className="py-10 text-center space-y-6">
           <div className="w-16 h-16 mx-auto rounded-2xl bg-gradient-to-tr from-purple-600 to-pink-600 flex items-center justify-center animate-pulse"><Clapperboard className="w-8 h-8"/></div>
-          <div><h3 className="text-2xl font-black">PRODUCING {durationSeconds}s MASTER CUT</h3><p className="text-xs text-purple-300 mt-1">CINEMIND is producing approximately {shotCount} continuity-locked shots and composing them into one video.</p></div>
+          <div><h3 className="text-2xl font-black">PRODUCING {durationSeconds}s COLD OPEN</h3><p className="text-xs text-purple-300 mt-1">CINEMIND is directing approximately {shotCount} continuity-locked Veo shots with synchronized native audio, then composing one master.</p></div>
           <div className="max-w-md mx-auto rounded-xl bg-white/5 border border-white/10 p-4 flex items-center gap-3 text-left"><StageIcon className="w-5 h-5 text-purple-300 animate-pulse"/><div><p className="text-xs uppercase text-gray-500">Production activity</p><p className="text-sm font-semibold">{stageLabel}</p></div></div>
-          <p className="text-[10px] text-gray-500">READY requires a single composed MP4 with localized voice mix and continuity metadata.</p>
+          <p className="text-[10px] text-gray-500">READY requires one composed MP4 with a coherent cold open, locked visual identity and Veo-native localized performance.</p>
         </div>}
       </div>
     </div>
