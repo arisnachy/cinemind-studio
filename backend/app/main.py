@@ -13,17 +13,20 @@ from .config import settings
 from .episode_render import render_episode
 from .gemini_service import studio
 from .memory import memory
+from .production_jobs import production_jobs
 from .schemas import CanonAnalyzeRequest, CanonResolveRequest, EpisodeRenderRequest, GenerateTitleRequest, VideoRequest
 from .video_service import videos
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
-app = FastAPI(title="CINEMIND Studio", version="0.5.0")
+app = FastAPI(title="CINEMIND Studio", version="0.6.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
+
 
 @app.on_event("startup")
 def startup() -> None:
     if memory.enabled and settings.clickhouse_allow_write:
         memory.bootstrap()
+
 
 @app.get("/api/health")
 def health():
@@ -39,29 +42,40 @@ def health():
         "ok": True,
         "gemini": studio.ready,
         "geminiModel": settings.text_model,
+        "qualityModel": settings.quality_model,
         "clickhouse_mcp": settings.clickhouse_ready,
         "clickhouse_cluster": clickhouse_ok,
         "imageGeneration": settings.enable_images,
+        "imageModel": settings.image_model,
         "videoGeneration": settings.enable_video,
-        "veoModel": settings.veo_model,
+        "veoVisualModel": settings.veo_visual_model,
+        "veoAudioModel": settings.veo_audio_model,
         "veoDurationSeconds": settings.veo_duration_seconds,
+        "veoMaxConcurrency": settings.veo_max_concurrency,
+        "veoPollSeconds": settings.veo_poll_seconds,
         "ttsGeneration": settings.enable_tts,
-        "ttsModel": settings.tts_model,
-        "ttsVoice": settings.tts_voice,
-        "episodeRenderMaxSeconds": 96,
+        "syncPreviewMaxSeconds": settings.sync_preview_max_seconds,
+        "longFormMaxSeconds": settings.long_form_max_seconds,
         "localeAwareGeneration": True,
-        "continuityReferences": True,
-        "firstFrameHandoff": True,
+        "realityPack": True,
+        "sharedStoryboardKeyframes": True,
+        "firstAndLastFrame": True,
+        "parallelShotRendering": True,
+        "qualityGate": settings.enable_quality_gate,
         "singleMasterPlayback": True,
         "episodeComposer": composer_status.get("available", False),
         "ffmpegExecutable": composer_status.get("executable", ""),
         "oneClickProduction": True,
+        "productionJobs": True,
     }
+
 
 @app.post("/api/studio/generate")
 async def generate(req: GenerateTitleRequest):
     if not studio.ready:
         raise HTTPException(503, detail={"phase": "preflight", "error": "Google Cloud is not configured"})
+    if req.pilotSeconds > settings.long_form_max_seconds:
+        raise HTTPException(400, detail={"phase": "preflight", "error": f"Requested duration exceeds {settings.long_form_max_seconds}s long-form limit"})
 
     phase = "blueprint"
     try:
@@ -75,44 +89,25 @@ async def generate(req: GenerateTitleRequest):
         memory.persist_generation(viewer_id=req.profile.id, title=title, canon_facts=blueprint.canonFacts)
 
         if req.autoProducePilot and settings.enable_video:
-            phase = "pilot_render"
-            title["productionStatus"] = "RENDERING"
             first_episode = (title.get("episodes") or [{}])[0]
-            try:
-                rendered = render_episode(EpisodeRenderRequest(
-                    title=title,
-                    episodeId=first_episode.get("id"),
-                    locale=req.locale,
-                    targetSeconds=req.pilotSeconds,
-                    includeNarration=True,
-                ))
-                segments = rendered.get("segments", [])
-                final_url = rendered.get("finalPlaybackUrl", "")
-                final_uri = rendered.get("finalVideoUri", "")
-                if not segments or not final_url or not final_uri:
-                    raise RuntimeError("Pilot renderer did not produce a continuous viewer-ready master")
-
-                title["productionStatus"] = "READY"
-                title["productionSegments"] = segments
-                title["productionPlaybackUrl"] = final_url
-                title["productionVideoUri"] = final_uri
-                title["productionComposition"] = rendered.get("composition", "single-master-mp4")
-                title["productionSummary"] = rendered.get("summary", "")
-                title["productionLogline"] = rendered.get("logline", "")
-                title["productionContinuityLock"] = rendered.get("continuityLock", {})
-                title["hasGeneratedVideo"] = True
-                title["videoPreviewUrl"] = final_url
-                if first_episode:
-                    first_episode["status"] = "Ready"
-                    first_episode["renderedSeconds"] = rendered.get("totalDurationSeconds", 0)
-                    first_episode["renderedSegments"] = len(segments)
-            except Exception as production_exc:
-                logging.exception("Automatic pilot production failed")
-                title["productionStatus"] = "FAILED"
-                title["productionError"] = f"pilot_render: {production_exc.__class__.__name__}: {production_exc}"
-                if first_episode:
-                    first_episode["status"] = "Scene generation"
-
+            render_req = EpisodeRenderRequest(
+                title=title,
+                episodeId=first_episode.get("id"),
+                locale=req.locale,
+                targetSeconds=req.pilotSeconds,
+                includeNarration=True,
+            )
+            job = production_jobs.start(render_req, title)
+            title["productionStatus"] = "QUEUED"
+            title["productionJobId"] = job["id"]
+            title["productionTargetSeconds"] = req.pilotSeconds
+            title["productionProgress"] = {
+                "stage": job["stage"],
+                "completed": job["completed"],
+                "total": job["total"],
+                "percent": job["percent"],
+                "message": job["message"],
+            }
         return title
     except HTTPException:
         raise
@@ -127,6 +122,15 @@ async def generate(req: GenerateTitleRequest):
             },
         ) from exc
 
+
+@app.get("/api/production/jobs/{job_id}")
+def production_job(job_id: str):
+    try:
+        return production_jobs.get(job_id)
+    except KeyError:
+        raise HTTPException(404, "Unknown production job")
+
+
 @app.post("/api/canon/analyze")
 async def canon_analyze(req: CanonAnalyzeRequest):
     if not studio.ready:
@@ -137,6 +141,7 @@ async def canon_analyze(req: CanonAnalyzeRequest):
     except Exception as exc:
         logging.exception("Canon analysis failed")
         raise HTTPException(500, f"Canon analysis failed: {exc}") from exc
+
 
 @app.post("/api/canon/resolve")
 async def canon_resolve(req: CanonResolveRequest):
@@ -154,6 +159,7 @@ async def canon_resolve(req: CanonResolveRequest):
     memory.persist_resolution(viewer_id="viewer", title=req.title, strategy=req.strategy, requested_change=req.requestedChange)
     return {"message": message, "canonVersion": version, "titleId": title_id}
 
+
 @app.post("/api/media/video")
 def generate_video(req: VideoRequest):
     try:
@@ -161,15 +167,22 @@ def generate_video(req: VideoRequest):
     except Exception as exc:
         raise HTTPException(400, str(exc)) from exc
 
+
 @app.post("/api/episode/render")
 def generate_episode_cut(req: EpisodeRenderRequest):
     if not studio.ready:
         raise HTTPException(503, "Google Cloud is not configured")
+    if req.targetSeconds > settings.sync_preview_max_seconds:
+        raise HTTPException(
+            409,
+            f"Foreground rendering is capped at {settings.sync_preview_max_seconds}s. Use the production-job flow for long-form video.",
+        )
     try:
         return render_episode(req)
     except Exception as exc:
         logging.exception("Episode render failed")
         raise HTTPException(400, f"Episode render failed: {exc}") from exc
+
 
 @app.api_route("/api/media/video/content", methods=["GET", "HEAD"])
 def video_content(uri: str, request: Request):
@@ -232,6 +245,7 @@ def video_content(uri: str, request: Request):
         "Content-Length": str(length),
     }
     return Response(content=data, status_code=206, media_type=content_type, headers=headers)
+
 
 DIST = Path(os.getenv("CINEMIND_DIST", "/app/dist"))
 if DIST.exists():
