@@ -77,9 +77,11 @@ class ReferenceService:
         requests.append(("primary-location", self._environment_prompt(title), "16:9", None))
 
         generated: dict[str, str] = {}
-        # Gemini image generation usually takes seconds. Running the three independent
-        # Reality Pack requests concurrently removes a large serial startup penalty.
-        with ThreadPoolExecutor(max_workers=min(3, len(requests))) as pool:
+        # Reality Pack shares the same quota-aware lane as all Gemini Image work.
+        # The expensive Veo stage remains highly parallel; image calls are throttled
+        # so a brief burst cannot starve the storyboard with RESOURCE_EXHAUSTED.
+        workers = min(settings.image_max_concurrency, len(requests))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {
                 pool.submit(studio.generate_image_data_url, prompt, aspect): (label, character)
                 for label, prompt, aspect, character in requests
@@ -113,10 +115,11 @@ class ReferenceService:
             "characterReferences": [x for x in refs if x != location_uri],
             "locationReference": location_uri,
             "photorealistic": True,
+            "imageConcurrency": workers,
         }
         title["_cinemind"] = meta
         refs = refs[:3]
-        log.info("Reality Pack created %d continuity references", len(refs))
+        log.info("Reality Pack created %d continuity references with image concurrency=%d", len(refs), workers)
 
         if len(refs) < 2:
             raise RuntimeError(
