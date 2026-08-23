@@ -3,10 +3,10 @@ from __future__ import annotations
 import time
 from urllib.parse import quote
 
+from google import genai
 from google.genai import types
 
 from .config import settings
-from .gemini_service import studio
 
 
 def _spoken_language(locale: str) -> str:
@@ -28,6 +28,17 @@ def _spoken_language(locale: str) -> str:
 
 
 class VideoService:
+    def __init__(self) -> None:
+        self._client = None
+
+    def client(self):
+        # Current Veo 3.1 model tables expose the production endpoints in
+        # us-central1. Keep text/image Gemini on global but route video through the
+        # documented regional endpoint so Lite/Fast model availability is stable.
+        if self._client is None:
+            self._client = genai.Client(vertexai=True, project=settings.project, location=settings.video_location)
+        return self._client
+
     def generate_prompt(
         self,
         prompt: str,
@@ -79,9 +90,7 @@ class VideoService:
                 "The supplied first frame is the exact starting visual state. Continue from it immediately without resetting poses or geography. "
             )
         else:
-            continuity_instruction = (
-                "Use supplied asset references as immutable identity and production-design anchors. "
-            )
+            continuity_instruction = "Use supplied asset references as immutable identity and production-design anchors. "
 
         final_prompt = (
             f"{prompt.strip()}\n"
@@ -101,16 +110,11 @@ class VideoService:
             "aspect_ratio": "16:9",
             "output_gcs_uri": settings.video_gcs_uri,
         }
-
-        call_kwargs: dict = {
-            "model": selected_model,
-            "prompt": final_prompt,
-        }
+        call_kwargs: dict = {"model": selected_model, "prompt": final_prompt}
 
         if first_frame_uri:
             call_kwargs["image"] = types.Image(gcs_uri=first_frame_uri, mime_type="image/png")
         if last_frame_uri:
-            # Veo first/last-frame generation exposes last_frame on the generation config.
             config_kwargs["last_frame"] = types.Image(gcs_uri=last_frame_uri, mime_type="image/png")
 
         if not first_frame_uri:
@@ -127,12 +131,13 @@ class VideoService:
                 config_kwargs["reference_images"] = refs
 
         call_kwargs["config"] = types.GenerateVideosConfig(**config_kwargs)
-        operation = studio.client().models.generate_videos(**call_kwargs)
+        client = self.client()
+        operation = client.models.generate_videos(**call_kwargs)
 
         deadline = time.time() + settings.veo_operation_timeout_seconds
         while not operation.done and time.time() < deadline:
             time.sleep(settings.veo_poll_seconds)
-            operation = studio.client().operations.get(operation)
+            operation = client.operations.get(operation)
         if not operation.done:
             raise RuntimeError(f"Veo generation exceeded the {settings.veo_operation_timeout_seconds}s operation deadline")
         if operation.error:
