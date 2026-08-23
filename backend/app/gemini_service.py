@@ -2,6 +2,7 @@ from __future__ import annotations
 import base64
 import logging
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from google import genai
 from google.genai import types
@@ -10,6 +11,7 @@ from .config import settings
 from .schemas import GenerateTitleRequest, StudioBlueprint
 
 log = logging.getLogger(__name__)
+
 
 class GeminiStudio:
     def __init__(self) -> None:
@@ -66,42 +68,29 @@ QUALITY CONTRACT:
 - Choose ONE unmistakable protagonist with a concrete external objective and internal pressure.
 - The core premise must be explainable in one sentence and create repeatable episode conflict.
 - Characters must have distinct motivations, knowledge states and relationships that create dramatic friction.
-- visualDescriptor for every major character must be an IMMUTABLE identity anchor: adult age range, facial structure, skin tone, hair, build, distinctive wardrobe and one signature prop/detail. Avoid vague adjectives.
-- voiceDescriptor for every speaking character must be an IMMUTABLE performance anchor written in English: perceived adult age, vocal register, timbre, cadence/accent appropriate to locale {req.locale}, emotional restraint, and speaking style. Never name or imitate a real performer.
-- The protagonist's posterPrompt MUST function as premium key art AND a reusable identity reference: one clearly visible protagonist, unobstructed face, canonical hair/wardrobe/signature prop, realistic natural skin, no collage, no extra faces, no text or logos.
-- The backdropPrompt MUST establish the primary recurring location/production design with consistent architecture, lighting and palette; avoid crowds and avoid unrelated characters.
-- The season must have escalation, not six unrelated premises.
-- Episode 1 MUST work as a real pilot: establish place/time and protagonist BEFORE the disturbance; then normal objective → inciting incident → consequential reaction → reveal → cliffhanger. Every beat must be causally connected.
-- Episode synopses should describe actions and consequences, not mood, symbolism or trailer language.
-- directorNotes for Episode 1 must state the primary location, protagonist wardrobe, lighting/time of day, key prop, opening normal-world action, and the exact dramatic reveal that the playable pilot opening should stage.
+- visualDescriptor for every major character is an IMMUTABLE identity anchor: adult age range, facial structure, skin tone, hair, build, practical wardrobe and one signature prop/detail. Avoid vague adjectives and glamour descriptions.
+- voiceDescriptor for every speaking character is an IMMUTABLE performance anchor written in English: perceived adult age, vocal register, timbre, cadence/accent appropriate to locale {req.locale}, emotional restraint and speaking style. Never name or imitate a real performer.
+- Poster/backdrop are MARKETING ART ONLY; continuity will use a separate Reality Pack. They must still be live-action photorealistic: plausible anatomy, natural skin texture, real-world materials, practical lighting, no glossy CGI or game-render look.
+- The season must have escalation, not unrelated premises.
+- Episode 1 MUST work as a real pilot: establish place/time and protagonist BEFORE the disturbance; normal objective → inciting incident → consequential reaction → reveal → cliffhanger. Every beat is causally connected.
+- Episode synopses describe actions and consequences, not mood, symbolism or trailer language.
+- directorNotes for Episode 1 state primary location, protagonist wardrobe, lighting/time of day, key prop, opening normal-world action, and exact dramatic reveal.
 - Prefer 2-4 recurring primary locations and a manageable cast so video continuity is achievable.
-- Do not use dream imagery, random glitches, mysterious silhouettes, abstract cosmic imagery or unexplained creatures unless the premise explicitly requires them.
+- Avoid dream imagery, random glitches, mysterious silhouettes, abstract cosmic imagery, generic cyberpunk neon and unexplained creatures unless the premise explicitly requires them.
 - If series: produce 4-6 episode outlines. If movie: produce 3 causally connected chapter segments.
 - canonFacts must be atomic facts that can be stored and queried later.
 - whyCreated must use only supplied taste signals.
-- teaserPrompt must describe a concrete story moment, not an abstract montage.
+- teaserPrompt describes a concrete story moment, not an abstract montage.
 """.strip()
 
         errors: list[str] = []
         attempts = [
-            types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=StudioBlueprint,
-                temperature=0.35,
-            ),
-            types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=StudioBlueprint,
-                temperature=0.18,
-            ),
+            types.GenerateContentConfig(response_mime_type="application/json", response_schema=StudioBlueprint, temperature=0.32),
+            types.GenerateContentConfig(response_mime_type="application/json", response_schema=StudioBlueprint, temperature=0.16),
         ]
         for index, config in enumerate(attempts, start=1):
             try:
-                response = self.client().models.generate_content(
-                    model=settings.text_model,
-                    contents=schema_prompt,
-                    config=config,
-                )
+                response = self.client().models.generate_content(model=settings.text_model, contents=schema_prompt, config=config)
                 if isinstance(response.parsed, StudioBlueprint):
                     return response.parsed, room_memo
                 text = (response.text or "").strip()
@@ -124,10 +113,7 @@ posterPrompt, teaserPrompt. Do not use markdown fences.
             response = self.client().models.generate_content(
                 model=settings.text_model,
                 contents=fallback_prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=0.12,
-                ),
+                config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.10),
             )
             text = (response.text or "").strip()
             if not text:
@@ -149,12 +135,15 @@ posterPrompt, teaserPrompt. Do not use markdown fences.
                     image_config=types.ImageConfig(aspect_ratio=aspect_ratio),
                 ),
             )
-            for part in response.parts or []:
-                if part.inline_data and part.inline_data.data:
-                    mime = part.inline_data.mime_type or "image/png"
-                    raw = part.inline_data.data
-                    encoded = base64.b64encode(raw).decode("ascii") if isinstance(raw, bytes) else str(raw)
-                    return f"data:{mime};base64,{encoded}"
+            for candidate in response.candidates or []:
+                if not candidate.content:
+                    continue
+                for part in candidate.content.parts or []:
+                    if part.inline_data and part.inline_data.data:
+                        mime = part.inline_data.mime_type or "image/png"
+                        raw = part.inline_data.data
+                        encoded = base64.b64encode(raw).decode("ascii") if isinstance(raw, bytes) else str(raw)
+                        return f"data:{mime};base64,{encoded}"
         except Exception as exc:
             log.warning("Gemini image generation failed: %s", exc)
         return ""
@@ -162,8 +151,15 @@ posterPrompt, teaserPrompt. Do not use markdown fences.
     def to_title(self, req: GenerateTitleRequest, bp: StudioBlueprint) -> dict:
         generated_id = f"title-{uuid.uuid4().hex[:12]}"
         universe_id = req.universeId if req.universeId and req.universeId != "new" else f"univ-{uuid.uuid4().hex[:10]}"
-        backdrop = self.generate_image_data_url(bp.backdropPrompt, "16:9")
-        poster = self.generate_image_data_url(bp.posterPrompt, "3:4")
+
+        # Marketing art is independent and can be generated concurrently. Reality
+        # Pack identity references are created separately immediately before video.
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            backdrop_future = pool.submit(self.generate_image_data_url, bp.backdropPrompt, "16:9")
+            poster_future = pool.submit(self.generate_image_data_url, bp.posterPrompt, "3:4")
+            backdrop = backdrop_future.result()
+            poster = poster_future.result()
+
         chars = []
         for c in bp.characters:
             chars.append({
@@ -195,7 +191,7 @@ posterPrompt, teaserPrompt. Do not use markdown fences.
             "matchScore": min(99, 88 + round(req.intensity / 10)),
             "genres": list(dict.fromkeys([req.genre, *bp.genres]))[:4],
             "tones": list(dict.fromkeys([req.mood, *bp.tones]))[:4],
-            "badges": ["Gemini Generated", "Continuity Lock", "Created For You"],
+            "badges": ["Gemini Generated", "Reality Pack", "Created For You"],
             "backdropUrl": backdrop,
             "posterUrl": poster or backdrop,
             "logoText": "CINEMIND ORIGINAL",
@@ -215,5 +211,6 @@ posterPrompt, teaserPrompt. Do not use markdown fences.
                 "generatedBy": settings.text_model,
             },
         }
+
 
 studio = GeminiStudio()
