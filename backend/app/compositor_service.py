@@ -21,7 +21,12 @@ log = logging.getLogger(__name__)
 
 class EpisodeCompositor:
     def __init__(self) -> None:
-        self._storage = storage.Client(project=settings.project) if settings.project else storage.Client()
+        self._storage = None
+
+    def _storage_client(self):
+        if self._storage is None:
+            self._storage = storage.Client(project=settings.project) if settings.project else storage.Client()
+        return self._storage
 
     @staticmethod
     def _ffmpeg_exe() -> str:
@@ -51,7 +56,7 @@ class EpisodeCompositor:
     def _download(self, uri: str, destination: Path) -> None:
         bucket, name = self._split_gs(uri)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        self._storage.bucket(bucket).blob(name).download_to_filename(str(destination))
+        self._storage_client().bucket(bucket).blob(name).download_to_filename(str(destination))
 
     def _upload(self, source: Path, folder: str, extension: str, content_type: str) -> str:
         prefix = settings.video_gcs_uri[5:] if settings.video_gcs_uri.startswith("gs://") else settings.video_gcs_uri
@@ -61,7 +66,7 @@ class EpisodeCompositor:
         object_name = "/".join(
             part for part in [base_prefix.rstrip("/"), folder.strip("/"), f"{uuid.uuid4().hex}.{extension}"] if part
         )
-        blob = self._storage.bucket(bucket_name).blob(object_name)
+        blob = self._storage_client().bucket(bucket_name).blob(object_name)
         blob.upload_from_filename(str(source), content_type=content_type)
         return f"gs://{bucket_name}/{object_name}"
 
