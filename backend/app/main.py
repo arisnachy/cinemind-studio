@@ -52,6 +52,8 @@ def health():
         "veoAudioModel": settings.veo_audio_model,
         "veoDurationSeconds": settings.veo_duration_seconds,
         "veoMaxConcurrency": settings.veo_max_concurrency,
+        "veoLroMaxInflight": settings.veo_lro_max_inflight,
+        "veoQuotaController": videos.quota_status(),
         "veoPollSeconds": settings.veo_poll_seconds,
         "ttsGeneration": settings.enable_tts,
         "syncPreviewMaxSeconds": settings.sync_preview_max_seconds,
