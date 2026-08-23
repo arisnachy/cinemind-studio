@@ -80,3 +80,47 @@ jobs:
           assert status["activeLros"] == 0
           print("Veo LRO quota controller OK")
           PY
+
+      - name: Veo 3.1 request contract regression
+        env:
+          PYTHONPATH: backend
+          VEO_AUDIO_MODEL: veo-3.1-lite-generate-001
+          VEO_VISUAL_MODEL: veo-3.1-fast-generate-001
+          VEO_DURATION_SECONDS: '8'
+        run: |
+          python - <<'PY'
+          from google.genai import types
+          from app.video_service import VideoService
+
+          service = VideoService()
+          status = service.contract_status()
+          assert status["ok"] is True, status
+          assert status["checks"]["audio"]["promptEnhancement"] == "managed-by-veo"
+          assert status["checks"]["visual"]["promptEnhancement"] == "managed-by-veo"
+
+          valid = {
+              "number_of_videos": 1,
+              "duration_seconds": 8,
+              "aspect_ratio": "16:9",
+              "output_gcs_uri": "gs://preflight-only/",
+          }
+          service._validate_request_contract(
+              model="veo-3.1-lite-generate-001",
+              config_kwargs=valid,
+          )
+          types.GenerateVideosConfig(**valid)
+
+          invalid = dict(valid)
+          invalid["enhance_prompt"] = False
+          try:
+              service._validate_request_contract(
+                  model="veo-3.1-lite-generate-001",
+                  config_kwargs=invalid,
+              )
+          except RuntimeError as exc:
+              assert "prompt enhancement cannot be disabled" in str(exc).lower()
+          else:
+              raise AssertionError("Veo 3.1 enhance_prompt=False must be rejected before network use")
+
+          print("Veo 3.1 request contract OK")
+          PY
